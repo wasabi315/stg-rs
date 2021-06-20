@@ -8,14 +8,14 @@ use stg::pretty::*;
 fn main() {
     let program = stg! {
         fix = {} n {f} -> {
-            let rec {
+            let rec
                 x = {f, x} u {} -> { var f {x} }
-            }
-            in var x {}
+            in
+                var x {}
         }
 
         fact = {} u {} -> {
-            let {
+            let
                 f = {} n {g, n} -> {
                     case {var n {}} of
                         0 -> { 1 }
@@ -27,14 +27,12 @@ fn main() {
                                 }
                         }
                 }
-            }
-            in var fix {f}
+             in
+                var fix {f}
         }
 
         main = {} u {} -> { var fact {30} }
     };
-
-    println!("{:?}", &program);
 
     pretty(&program, &mut io::stdout()).unwrap();
 }

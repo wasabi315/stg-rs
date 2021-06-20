@@ -81,14 +81,13 @@ macro_rules! stg {
 macro_rules! binds {
     ($($binds:tt)*) => {{
         let mut m = std::collections::HashMap::new();
-        do_bind!(m, $($binds)*);
+        do_bind_then!(exhausted, m, $($binds)*);
         Binds(m)
     }};
 }
 
-macro_rules! do_bind {
-    ($m:expr, ) => {};
-    ($m:expr, $i:ident = {$($free:ident),* $(,)?} n {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {
+macro_rules! do_bind_then {
+    ($cont:ident, $m:expr, $i:ident = {$($free:ident),* $(,)?} n {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {{
         $m.insert(
             stringify!($i).to_owned(),
             LambdaForm {
@@ -98,9 +97,9 @@ macro_rules! do_bind {
                 expr: expr!($($expr)*),
             }
         );
-        do_bind!($m, $($rest)*);
-    };
-    ($m:expr, $i:ident = {$($free:ident),* $(,)?} u {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {
+        do_bind_then!($cont, $m, $($rest)*)
+    }};
+    ($cont:ident, $m:expr, $i:ident = {$($free:ident),* $(,)?} u {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {{
         $m.insert(
             stringify!($i).to_owned(),
             LambdaForm {
@@ -110,26 +109,39 @@ macro_rules! do_bind {
                 expr: expr!($($expr)*),
             }
         );
-        do_bind!($m, $($rest)*);
+        do_bind_then!($cont, $m, $($rest)*)
+    }};
+    ($cont:ident, $m:expr, $($rest:tt)*) => {
+        $cont!($($rest)*)
+    };
+}
+
+macro_rules! exhausted {
+    () => {
+        ()
     };
 }
 
 #[macro_export]
 macro_rules! expr {
-    (let {$($binds:tt)*} in $($expr:tt)+) => {
-        Expr::Let {
-            rec: false,
-            binds: binds!($($binds)*),
-            expr: Box::new(expr!($($expr)*)),
-        }
-    };
-    (let rec {$($binds:tt)*} in $($expr:tt)+) => {
+    (let rec $($rest:tt)+) => {{
+        let mut m = std::collections::HashMap::new();
+        let expr = do_bind_then!(let_body_expr, m, $($rest)*);
         Expr::Let {
             rec: true,
-            binds: binds!($($binds)*),
-            expr: Box::new(expr!($($expr)*)),
+            binds: Binds(m),
+            expr,
         }
-    };
+    }};
+    (let $($rest:tt)+) => {{
+        let mut m = std::collections::HashMap::new();
+        let expr = do_bind_then!(let_body_expr, m, $($rest)*);
+        Expr::Let {
+            rec: false,
+            binds: Binds(m),
+            expr,
+        }
+    }};
     (case {$($expr:tt)+} of $($alts:tt)*) => {
         Expr::Case {
             expr: Box::new(expr!($($expr)*)),
@@ -156,6 +168,12 @@ macro_rules! expr {
     };
     ($lit:literal) => {
         Expr::Lit($lit)
+    };
+}
+
+macro_rules! let_body_expr {
+    (in $($expr:tt)+) => {
+        Box::new(expr!($($expr)*))
     };
 }
 

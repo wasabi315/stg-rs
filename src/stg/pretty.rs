@@ -59,7 +59,7 @@ impl Expr {
     {
         match self {
             Expr::Let { rec, binds, expr } => allocator
-                .text(if *rec { "letrec" } else { "let" })
+                .text(if *rec { "let rec" } else { "let" })
                 .append(
                     allocator
                         .hardline()
