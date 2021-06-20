@@ -165,40 +165,48 @@ macro_rules! let_expr {
 
 #[macro_export]
 macro_rules! alts {
-    (add_alts, $alts:expr, ) => {};
-    (add_alts, $alts:expr, $constr:ident {$($vars:ident),* $(,)?} -> {$($expr:tt)+} $($rest:tt)*) => {
-        $alts.push(Alt::Alg {
-            constr: stringify!($constr).to_owned(),
-            vars: vec![$(stringify!($vars).to_owned())*],
-            expr: Box::new(expr!($($expr)*)),
-        });
-        alts!(add_alts, $alts, $($rest)*);
+    ([$($alts:tt)*], ) => {
+        vec![$($alts)*]
     };
-    (add_alts, $alts:expr, $lit:literal -> {$($expr:tt)+} $($rest:tt)*) => {
-        $alts.push(Alt::Prim {
-            lit: $lit,
-            expr: Box::new(expr!($($expr)*)),
-        });
-        alts!(add_alts, $alts, $($rest)*);
+    ([$($alts:tt)*], $constr:ident {$($vars:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {
+        alts!([
+            $($alts)*
+            Alt::Alg {
+                constr: stringify!($constr).to_owned(),
+                vars: vec![$(stringify!($vars).to_owned())*],
+                expr: Box::new(expr!($($expr)*)),
+            },
+        ], $($rest)*)
     };
-    (add_alts, $alts:expr, $var:ident -> {$($expr:tt)+} $($rest:tt)*) => {
-        $alts.push(Alt::Var {
-            var: stringify!($var).to_owned(),
-            expr: Box::new(expr!($($expr)*)),
-        });
-        alts!(add_alts, $alts, $($rest)*);
+    ([$($alts:tt)*], $lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
+        alts!([
+            $($alts)*
+            Alt::Prim {
+                lit: $lit,
+                expr: Box::new(expr!($($expr)*)),
+            },
+        ], $($rest)*)
     };
-    (add_alts, $alts:expr, default -> {$($expr:tt)+} $($rest:tt)*) => {
-        $alts.push(Alt::Def {
-            expr: Box::new(expr!($($expr)*)),
-        });
-        alts!(add_alts, $alts, $($rest)*);
+    ([$($alts:tt)*], default -> {$($expr:tt)*} $($rest:tt)*) => {
+        alts!([
+            $($alts)*
+            Alt::Def {
+                expr: Box::new(expr!($($expr)*)),
+            },
+        ], $($rest)*)
     };
-    ($($alts:tt)*) => {{
-        let mut alts = Vec::new();
-        alts!(add_alts, alts, $($alts)*);
-        alts
-    }};
+    ([$($alts:tt)*], $var:ident -> {$($expr:tt)*} $($rest:tt)*) => {
+        alts!([
+            $($alts)*
+            Alt::Var {
+                var: stringify!($var).to_owned(),
+                expr: Box::new(expr!($($expr)*)),
+            },
+        ], $($rest)*)
+    };
+    ($($rest:tt)*) => {
+        alts!([], $($rest)*)
+    };
 }
 
 #[macro_export]
