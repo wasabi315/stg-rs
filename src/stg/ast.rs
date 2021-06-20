@@ -78,7 +78,7 @@ macro_rules! stg {
 }
 
 macro_rules! binds_and {
-    ("add_bind", $cont:ident, $m:expr, $i:ident = {$($free:ident),* $(,)?} $rec:ident {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {{
+    (add_bind, $cont:ident, $m:expr, $i:ident = {$($free:ident),* $(,)?} $rec:ident {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {{
         $m.insert(
             stringify!($i).to_owned(),
             LambdaForm {
@@ -88,17 +88,17 @@ macro_rules! binds_and {
                 expr: expr!($($expr)*),
             }
         );
-        binds_and!("add_bind", $cont, $m, $($rest)*)
+        binds_and!(add_bind, $cont, $m, $($rest)*)
     }};
-    ("add_bind", $cont:ident, $m:expr, $($rest:tt)*) => {
-        binds_and!("apply_cont", $cont, $($rest)*)
+    (add_bind, $cont:ident, $m:expr, $($rest:tt)*) => {
+        binds_and!(apply_cont, $cont, $($rest)*)
     };
-    ("apply_cont", $cont:ident, $($rest:tt)*) => {
+    (apply_cont, $cont:ident, $($rest:tt)*) => {
         $cont!($($rest)*)
     };
     ($cont:ident, $($rest:tt)*) => {{
         let mut m = std::collections::HashMap::new();
-        let x = binds_and!("add_bind", $cont, m, $($rest)*);
+        let x = binds_and!(add_bind, $cont, m, $($rest)*);
         (Binds(m), x)
     }};
 }
@@ -172,38 +172,38 @@ macro_rules! let_body_expr {
 
 #[macro_export]
 macro_rules! alts {
-    ("add_alts", $alts:expr, ) => {};
-    ("add_alts", $alts:expr, $constr:ident {$($vars:ident),* $(,)?} -> {$($expr:tt)+} $($rest:tt)*) => {
+    (add_alts, $alts:expr, ) => {};
+    (add_alts, $alts:expr, $constr:ident {$($vars:ident),* $(,)?} -> {$($expr:tt)+} $($rest:tt)*) => {
         $alts.push(Alt::Alg {
             constr: stringify!($constr).to_owned(),
             vars: vec![$(stringify!($vars).to_owned())*],
             expr: Box::new(expr!($($expr)*)),
         });
-        alts!("add_alts", $alts, $($rest)*);
+        alts!(add_alts, $alts, $($rest)*);
     };
-    ("add_alts", $alts:expr, $lit:literal -> {$($expr:tt)+} $($rest:tt)*) => {
+    (add_alts, $alts:expr, $lit:literal -> {$($expr:tt)+} $($rest:tt)*) => {
         $alts.push(Alt::Prim {
             lit: $lit,
             expr: Box::new(expr!($($expr)*)),
         });
-        alts!("add_alts", $alts, $($rest)*);
+        alts!(add_alts, $alts, $($rest)*);
     };
-    ("add_alts", $alts:expr, $var:ident -> {$($expr:tt)+} $($rest:tt)*) => {
+    (add_alts, $alts:expr, $var:ident -> {$($expr:tt)+} $($rest:tt)*) => {
         $alts.push(Alt::Var {
             var: stringify!($var).to_owned(),
             expr: Box::new(expr!($($expr)*)),
         });
-        alts!("add_alts", $alts, $($rest)*);
+        alts!(add_alts, $alts, $($rest)*);
     };
-    ("add_alts", $alts:expr, default -> {$($expr:tt)+} $($rest:tt)*) => {
+    (add_alts, $alts:expr, default -> {$($expr:tt)+} $($rest:tt)*) => {
         $alts.push(Alt::Def {
             expr: Box::new(expr!($($expr)*)),
         });
-        alts!("add_alts", $alts, $($rest)*);
+        alts!(add_alts, $alts, $($rest)*);
     };
     ($($alts:tt)*) => {{
         let mut alts = Vec::new();
-        alts!("add_alts", alts, $($alts)*);
+        alts!(add_alts, alts, $($alts)*);
         alts
     }};
 }
