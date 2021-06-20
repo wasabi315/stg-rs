@@ -78,12 +78,12 @@ macro_rules! stg {
 }
 
 macro_rules! binds_and {
-    (add_bind, $cont:ident, $m:expr, $i:ident = {$($free:ident),* $(,)?} $rec:ident {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {{
+    (add_bind, $cont:ident, $m:expr, $i:ident = {$($free:ident),* $(,)?} $pi:ident {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {{
         $m.insert(
             stringify!($i).to_owned(),
             LambdaForm {
                 free: vec![$(stringify!($free).to_owned(),)*],
-                updatable: pi!($rec),
+                updatable: pi!($pi),
                 args: vec![$(stringify!($args).to_owned(),)*],
                 expr: expr!($($expr)*),
             }
