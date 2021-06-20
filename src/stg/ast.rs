@@ -77,9 +77,19 @@ macro_rules! stg {
     };
 }
 
-macro_rules! binds_and {
-    (add_bind, $cont:ident, $m:expr, $i:ident = {$($free:ident),* $(,)?} $pi:ident {$($args:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {{
-        $m.insert(
+#[macro_export]
+macro_rules! binds {
+    ($($i:ident = {$($free:tt)*} $pi:ident {$($args:tt)*} -> {$($expr:tt)+})*) => {
+        Binds(std::array::IntoIter::new([
+            $(bind!($i = {$($free)*} $pi {$($args)*} -> {$($expr)*}),)*
+        ]).collect())
+    };
+}
+
+#[macro_export]
+macro_rules! bind {
+    ($i:ident = {$($free:ident),*} $pi:ident {$($args:ident),*} -> {$($expr:tt)+}) => {
+        (
             stringify!($i).to_owned(),
             LambdaForm {
                 free: vec![$(stringify!($free).to_owned(),)*],
@@ -87,20 +97,8 @@ macro_rules! binds_and {
                 args: vec![$(stringify!($args).to_owned(),)*],
                 expr: expr!($($expr)*),
             }
-        );
-        binds_and!(add_bind, $cont, $m, $($rest)*)
-    }};
-    (add_bind, $cont:ident, $m:expr, $($rest:tt)*) => {
-        binds_and!(apply_cont, $cont, $($rest)*)
+        )
     };
-    (apply_cont, $cont:ident, $($rest:tt)*) => {
-        $cont!($($rest)*)
-    };
-    ($cont:ident, $($rest:tt)*) => {{
-        let mut m = std::collections::HashMap::new();
-        let x = binds_and!(add_bind, $cont, m, $($rest)*);
-        (Binds(m), x)
-    }};
 }
 
 macro_rules! pi {
@@ -113,28 +111,13 @@ macro_rules! pi {
 }
 
 #[macro_export]
-macro_rules! binds {
-    ($($binds:tt)*) => {{
-        binds_and!(exhaust, $($binds)*).0
-    }};
-}
-
-macro_rules! exhaust {
-    () => {
-        ()
-    };
-}
-
-#[macro_export]
 macro_rules! expr {
-    (let rec $($rest:tt)+) => {{
-        let (binds, expr) = binds_and!(let_body_expr, $($rest)*);
-        Expr::Let { rec: true, binds, expr }
-    }};
-    (let $($rest:tt)+) => {{
-        let (binds, expr) = binds_and!(let_body_expr, $($rest)*);
-        Expr::Let { rec: false, binds, expr }
-    }};
+    (let rec $($rest:tt)+) => {
+        let_expr!(true, [], $($rest)*)
+    };
+    (let $($rest:tt)+) => {
+        let_expr!(false, [], $($rest)*)
+    };
     (case {$($expr:tt)+} of $($alts:tt)*) => {
         Expr::Case {
             expr: Box::new(expr!($($expr)*)),
@@ -164,9 +147,19 @@ macro_rules! expr {
     };
 }
 
-macro_rules! let_body_expr {
-    (in $($expr:tt)+) => {
-        Box::new(expr!($($expr)*))
+macro_rules! let_expr {
+    ($rec:literal, [$($binds:tt)*], in $($rest:tt)+) => {
+        Expr::Let {
+            rec: $rec,
+            binds: Binds(std::array::IntoIter::new([$($binds)*]).collect()),
+            expr: Box::new(expr!($($rest)*)),
+        }
+    };
+    ($rec:literal, [$($binds:tt)*], $i:ident = {$($free:tt)*} $pi:ident {$($args:tt)*} -> {$($expr:tt)+} $($rest:tt)+) => {
+        let_expr!($rec, [
+            $($binds)*
+            bind!($i = {$($free)*} $pi {$($args)*} -> {$($expr)*}),
+        ], $($rest)*)
     };
 }
 
