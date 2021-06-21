@@ -113,53 +113,64 @@ macro_rules! pi {
 #[macro_export]
 macro_rules! expr {
     (let rec $($rest:tt)+) => {
-        let_expr!(true, [], $($rest)*)
+        expr!(@let_accum [], true, $($rest)*);
     };
     (let $($rest:tt)+) => {
-        let_expr!(false, [], $($rest)*)
+        expr!(@let_accum [], false, $($rest)*);
     };
-    (case {$($expr:tt)+} of $($alts:tt)*) => {
-        Expr::Case {
-            expr: Box::new(expr!($($expr)*)),
-            alts: alts!($($alts)*)
-        }
-    };
-    (var $var:ident {$($args:tt),* $(,)?}) => {
-        Expr::VarApp {
-            var: stringify!($var).to_owned(),
-            args: vec![$(atom!($args),)*],
-        }
-    };
-    (constr $constr:ident {$($args:tt),* $(,)?}) => {
-        Expr::ConstrApp {
-            constr: stringify!($constr).to_owned(),
-            args: vec![$(atom!($args),)*],
-        }
-    };
-    (prim $prim:ident {$($args:tt),* $(,)?}) => {
-        Expr::PrimApp {
-            prim: stringify!($prim).to_owned(),
-            args: vec![$(atom!($args),)*],
-        }
-    };
-    ($lit:literal) => {
-        Expr::Lit($lit)
-    };
-}
-
-macro_rules! let_expr {
-    ($rec:literal, [$($binds:tt)*], in $($rest:tt)+) => {
+    (@let_accum
+        [$($binds:tt)*],
+        $rec:literal,
+        in $($rest:tt)+
+    ) => {
         Expr::Let {
             rec: $rec,
             binds: Binds(std::array::IntoIter::new([$($binds)*]).collect()),
             expr: Box::new(expr!($($rest)*)),
         }
     };
-    ($rec:literal, [$($binds:tt)*], $i:ident = {$($free:tt)*} $pi:ident {$($args:tt)*} -> {$($expr:tt)+} $($rest:tt)+) => {
-        let_expr!($rec, [
+    (@let_accum
+        [$($binds:tt)*],
+        $rec:literal,
+        $i:ident = {$($free:tt)*} $pi:ident {$($args:tt)*} -> {$($expr:tt)+}
+        $($rest:tt)+
+    ) => {
+        expr!(@let_accum [
             $($binds)*
             bind!($i = {$($free)*} $pi {$($args)*} -> {$($expr)*}),
-        ], $($rest)*)
+        ], $rec, $($rest)*)
+    };
+
+    (case {$($expr:tt)+} of $($alts:tt)*) => {
+        Expr::Case {
+            expr: Box::new(expr!($($expr)*)),
+            alts: alts!($($alts)*)
+        }
+    };
+
+    (var $var:ident {$($args:tt),* $(,)?}) => {
+        Expr::VarApp {
+            var: stringify!($var).to_owned(),
+            args: vec![$(atom!($args),)*],
+        }
+    };
+
+    (constr $constr:ident {$($args:tt),* $(,)?}) => {
+        Expr::ConstrApp {
+            constr: stringify!($constr).to_owned(),
+            args: vec![$(atom!($args),)*],
+        }
+    };
+
+    (prim $prim:ident {$($args:tt),* $(,)?}) => {
+        Expr::PrimApp {
+            prim: stringify!($prim).to_owned(),
+            args: vec![$(atom!($args),)*],
+        }
+    };
+
+    ($lit:literal) => {
+        Expr::Lit($lit)
     };
 }
 
