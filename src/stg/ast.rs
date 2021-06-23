@@ -22,7 +22,7 @@ pub enum Expr {
     },
     Case {
         expr: Box<Expr>,
-        alts: Vec<Alt>,
+        alts: Alts,
     },
     VarApp {
         var: Var,
@@ -40,23 +40,18 @@ pub enum Expr {
 }
 
 #[derive(Debug)]
-pub enum Alt {
-    Alg {
-        constr: Constr,
-        vars: Vec<Var>,
-        expr: Box<Expr>,
-    },
-    Prim {
-        lit: Literal,
-        expr: Box<Expr>,
-    },
-    Var {
-        var: Var,
-        expr: Box<Expr>,
-    },
-    Def {
-        expr: Box<Expr>,
-    },
+pub struct Alts(pub NonDefAlts, pub DefAlt);
+
+#[derive(Debug)]
+pub enum NonDefAlts {
+    AlgAlts(Vec<(Constr, Vec<Var>, Expr)>),
+    PrimAlts(Vec<(Literal, Expr)>),
+}
+
+#[derive(Debug)]
+pub enum DefAlt {
+    VarAlt(Var, Box<Expr>),
+    DefAlt(Box<Expr>),
 }
 
 pub type Var = String;
@@ -176,47 +171,59 @@ macro_rules! expr {
 
 #[macro_export]
 macro_rules! alts {
-    ([$($alts:tt)*], ) => {
-        vec![$($alts)*]
+    (@accum_aalt [$($aalts:tt)*], default -> {$($expr:tt)*}) => {
+        Alts(
+            NonDefAlts::AlgAlts(vec![$($aalts)*]),
+            DefAlt::DefAlt(Box::new(expr!($($expr)*)))
+        )
     };
-    ([$($alts:tt)*], $constr:ident {$($vars:ident),* $(,)?} -> {$($expr:tt)*} $($rest:tt)*) => {
-        alts!([
-            $($alts)*
-            Alt::Alg {
-                constr: stringify!($constr).to_owned(),
-                vars: vec![$(stringify!($vars).to_owned())*],
-                expr: Box::new(expr!($($expr)*)),
-            },
+    (@accum_aalt [$($aalts:tt)*], $var:ident -> {$($expr:tt)*}) => {
+        Alts(
+            NonDefAlts::AlgAlts(vec![$($aalts)*]),
+            DefAlt::VarAlt(stringify!($var).to_owned(), Box::new(expr!($($expr)*)))
+        )
+    };
+    (@accum_aalt [$($aalts:tt)*], $constr:ident {$($vars:ident),*} -> {$($expr:tt)*} $($rest:tt)+) => {
+        alts!(@accum_aalt [
+            $($aalts)*
+            (
+                stringify!($constr).to_owned(),
+                vec![$(stringify!($vars).to_owned())*],
+                expr!($($expr)*),
+            ),
         ], $($rest)*)
     };
-    ([$($alts:tt)*], $lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
-        alts!([
-            $($alts)*
-            Alt::Prim {
-                lit: $lit,
-                expr: Box::new(expr!($($expr)*)),
-            },
+    (@accum_palt [$($palts:tt)*], default -> {$($expr:tt)*}) => {
+        Alts(
+            NonDefAlts::PrimAlts(vec![$($palts)*]),
+            DefAlt::DefAlt(Box::new(expr!($($expr)*)))
+        )
+    };
+    (@accum_palt [$($palts:tt)*], $var:ident -> {$($expr:tt)*}) => {
+        Alts(
+            NonDefAlts::PrimAlts(vec![$($palts)*]),
+            DefAlt::VarAlt(stringify!($var).to_owned(), Box::new(expr!($($expr)*)))
+        )
+    };
+    (@accum_palt [$($palts:tt)*], $lit:literal -> {$($expr:tt)*} $($rest:tt)+) => {
+        alts!(@accum_aalt [
+            $($palts)*
+            (
+                $lit,
+                expr!($($expr)*),
+            ),
         ], $($rest)*)
     };
-    ([$($alts:tt)*], default -> {$($expr:tt)*} $($rest:tt)*) => {
-        alts!([
-            $($alts)*
-            Alt::Def {
-                expr: Box::new(expr!($($expr)*)),
-            },
-        ], $($rest)*)
-    };
-    ([$($alts:tt)*], $var:ident -> {$($expr:tt)*} $($rest:tt)*) => {
-        alts!([
-            $($alts)*
-            Alt::Var {
-                var: stringify!($var).to_owned(),
-                expr: Box::new(expr!($($expr)*)),
-            },
+    ($lit:literal -> {$($expr:tt)*} $($rest:tt)+) => {
+        alts!(@accum_palt [
+            (
+                $lit,
+                expr!($($expr)*),
+            ),
         ], $($rest)*)
     };
     ($($rest:tt)*) => {
-        alts!([], $($rest)*)
+        alts!(@accum_aalt [], $($rest)*)
     };
 }
 

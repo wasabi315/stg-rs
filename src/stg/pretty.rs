@@ -81,10 +81,7 @@ impl Expr {
                 .append(
                     allocator
                         .hardline()
-                        .append(allocator.intersperse(
-                            alts.iter().map(|alt| alt.pretty(allocator)),
-                            allocator.hardline().append(allocator.hardline()),
-                        ))
+                        .append(alts.pretty(allocator))
                         .nest(TAB_SIZE),
                 ),
             Expr::VarApp { var, args } => {
@@ -115,7 +112,26 @@ impl Expr {
     }
 }
 
-impl Alt {
+impl Alts {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        match &self.0 {
+            NonDefAlts::AlgAlts(alts) if alts.is_empty() == true => self.1.pretty(allocator),
+            NonDefAlts::PrimAlts(alts) if alts.is_empty() == true => self.1.pretty(allocator),
+            _ => self
+                .0
+                .pretty(allocator)
+                .append(allocator.hardline().append(allocator.hardline()))
+                .append(self.1.pretty(allocator)),
+        }
+    }
+}
+
+impl NonDefAlts {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
@@ -123,33 +139,55 @@ impl Alt {
         A: Clone,
     {
         match self {
-            Alt::Alg { constr, vars, expr } => allocator
-                .text(constr)
-                .append(allocator.text(" "))
-                .append(braces_and_sep_by_comma(allocator, vars))
-                .append(allocator.text(" ->"))
-                .append(
+            NonDefAlts::AlgAlts(aalts) => allocator.intersperse(
+                aalts.iter().map(|(constr, vars, expr)| {
                     allocator
-                        .hardline()
-                        .append(expr.pretty(allocator))
-                        .nest(TAB_SIZE),
-                ),
-            Alt::Prim { lit, expr } => allocator
-                .text(lit.to_string())
-                .append(allocator.text(" ->"))
-                .append(
+                        .text(constr)
+                        .append(allocator.text(" "))
+                        .append(braces_and_sep_by_comma(allocator, vars))
+                        .append(allocator.text(" ->"))
+                        .append(
+                            allocator
+                                .hardline()
+                                .append(expr.pretty(allocator))
+                                .nest(TAB_SIZE),
+                        )
+                }),
+                allocator.hardline().append(allocator.hardline()),
+            ),
+            NonDefAlts::PrimAlts(palts) => allocator.intersperse(
+                palts.iter().map(|(lit, expr)| {
                     allocator
-                        .hardline()
-                        .append(expr.pretty(allocator))
-                        .nest(TAB_SIZE),
-                ),
-            Alt::Var { var, expr } => allocator.text(var).append(allocator.text(" ->")).append(
+                        .text(lit.to_string())
+                        .append(allocator.text(" ->"))
+                        .append(
+                            allocator
+                                .hardline()
+                                .append(expr.pretty(allocator))
+                                .nest(TAB_SIZE),
+                        )
+                }),
+                allocator.hardline().append(allocator.hardline()),
+            ),
+        }
+    }
+}
+
+impl DefAlt {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone,
+    {
+        match self {
+            DefAlt::VarAlt(var, expr) => allocator.text(var).append(allocator.text(" ->")).append(
                 allocator
                     .hardline()
                     .append(expr.pretty(allocator))
                     .nest(TAB_SIZE),
             ),
-            Alt::Def { expr } => allocator.text("default ->").append(
+            DefAlt::DefAlt(expr) => allocator.text("default ->").append(
                 allocator
                     .hardline()
                     .append(expr.pretty(allocator))
