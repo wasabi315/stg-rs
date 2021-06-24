@@ -171,6 +171,9 @@ macro_rules! expr {
 
 #[macro_export]
 macro_rules! alts {
+    (@accum_aalt [$($aalts:tt)*], ) => {
+        compile_error!("Case expression with no default alternatives")
+    };
     (@accum_aalt [$($aalts:tt)*], default -> {$($expr:tt)*}) => {
         Alts(
             NonDefAlts::AlgAlts(vec![$($aalts)*]),
@@ -183,7 +186,7 @@ macro_rules! alts {
             DefAlt::VarAlt(stringify!($var).to_owned(), Box::new(expr!($($expr)*)))
         )
     };
-    (@accum_aalt [$($aalts:tt)*], $constr:ident {$($vars:ident),*} -> {$($expr:tt)*} $($rest:tt)+) => {
+    (@accum_aalt [$($aalts:tt)*], $constr:ident {$($vars:ident),*} -> {$($expr:tt)*} $($rest:tt)*) => {
         alts!(@accum_aalt [
             $($aalts)*
             (
@@ -192,6 +195,12 @@ macro_rules! alts {
                 expr!($($expr)*),
             ),
         ], $($rest)*)
+    };
+    (@accum_aalt [$($aalts:tt)*], $($rest:tt)*) => {
+        compile_error!(concat!("Invalid algebraic alternative found: ", stringify!($($rest)*)))
+    };
+    (@accum_palt [$($aalts:tt)*], ) => {
+        compile_error!("Case expression with no default alternatives")
     };
     (@accum_palt [$($palts:tt)*], default -> {$($expr:tt)*}) => {
         Alts(
@@ -205,8 +214,8 @@ macro_rules! alts {
             DefAlt::VarAlt(stringify!($var).to_owned(), Box::new(expr!($($expr)*)))
         )
     };
-    (@accum_palt [$($palts:tt)*], $lit:literal -> {$($expr:tt)*} $($rest:tt)+) => {
-        alts!(@accum_aalt [
+    (@accum_palt [$($palts:tt)*], $lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
+        alts!(@accum_palt [
             $($palts)*
             (
                 $lit,
@@ -214,7 +223,10 @@ macro_rules! alts {
             ),
         ], $($rest)*)
     };
-    ($lit:literal -> {$($expr:tt)*} $($rest:tt)+) => {
+    (@accum_palt [$($aalts:tt)*], $($rest:tt)*) => {
+        compile_error!(concat!("Invalid primitive alternative found: ", stringify!($($rest)*)))
+    };
+    ($lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
         alts!(@accum_palt [
             (
                 $lit,
