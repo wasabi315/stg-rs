@@ -214,35 +214,37 @@ fn run(state: &mut State) -> Result<()> {
             Code::Enter(addr) => {
                 let _addr = addr.borrow();
                 match &*_addr {
-                    Some(Closure {
-                        lf:
-                            LambdaForm {
-                                free: lf_free,
-                                updatable,
-                                args: lf_args,
-                                expr,
-                            },
-                        free,
-                    }) => {
-                        if *updatable {
+                    Some(Closure { lf, free }) => {
+                        if lf.updatable {
+                            if !lf.args.is_empty() {
+                                return Err(UpdatableClosureWithArgs.into());
+                            }
+
                             let args = std::mem::take(&mut state.args);
                             let returns = std::mem::take(&mut state.returns);
+                            let locals =
+                                lf.free.iter().cloned().zip(free.iter().cloned()).collect();
+                            let expr = &lf.expr;
+                            drop(_addr);
+
+                            // Set blackhole
+                            *addr.borrow_mut() = None;
+
                             state.updates.push(UpdateStackFrame {
                                 args,
                                 returns,
                                 addr: Rc::clone(&addr),
                             });
-                            let locals =
-                                lf_free.iter().cloned().zip(free.iter().cloned()).collect();
-                            drop(_addr);
                             state.code = Code::Eval { expr, locals };
                         } else {
-                            let args = state.args.drain(..lf_args.len());
+                            let args = state.args.drain(..lf.args.len());
 
-                            let arg_pairs = lf_args.iter().cloned().zip(args);
-                            let free_pairs = lf_free.iter().cloned().zip(free.iter().cloned());
+                            let arg_pairs = lf.args.iter().cloned().zip(args);
+                            let free_pairs = lf.free.iter().cloned().zip(free.iter().cloned());
                             let locals = arg_pairs.chain(free_pairs).collect();
+                            let expr = &lf.expr;
                             drop(_addr);
+
                             state.code = Code::Eval { expr, locals };
                         }
                     }
@@ -304,3 +306,14 @@ impl fmt::Display for ApplyToInt {
 }
 
 impl Error for ApplyToInt {}
+
+#[derive(Debug)]
+struct UpdatableClosureWithArgs;
+
+impl fmt::Display for UpdatableClosureWithArgs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Updatable closure with arguments")
+    }
+}
+
+impl Error for UpdatableClosureWithArgs {}
