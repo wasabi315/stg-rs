@@ -90,23 +90,25 @@ macro_rules! stg {
 macro_rules! binds {
     ($($i:ident = {$($free:tt)*} $pi:ident {$($args:tt)*} -> {$($expr:tt)+})*) => {
         Binds(std::array::IntoIter::new([
-            $(bind!($i = {$($free)*} $pi {$($args)*} -> {$($expr)*}),)*
+            $((
+                stringify!($i).to_owned(),
+                LambdaForm {
+                    free: vec![$(stringify!($free).to_owned(),)*],
+                    updatable: pi!($pi),
+                    args: vec![$(stringify!($args).to_owned(),)*],
+                    expr: expr!($($expr)*),
+                }
+            ),)*
         ]).collect())
     };
 }
 
-#[macro_export]
-macro_rules! bind {
-    ($i:ident = {$($free:ident),*} $pi:ident {$($args:ident),*} -> {$($expr:tt)+}) => {
-        (
-            stringify!($i).to_owned(),
-            LambdaForm {
-                free: vec![$(stringify!($free).to_owned(),)*],
-                updatable: pi!($pi),
-                args: vec![$(stringify!($args).to_owned(),)*],
-                expr: expr!($($expr)*),
-            }
-        )
+macro_rules! rec {
+    () => {
+        false
+    };
+    (rec) => {
+        true
     };
 }
 
@@ -121,59 +123,38 @@ macro_rules! pi {
 
 #[macro_export]
 macro_rules! expr {
-    (let rec $($rest:tt)+) => {
-        expr!(@let_accum [], true, $($rest)*);
-    };
-    (let $($rest:tt)+) => {
-        expr!(@let_accum [], false, $($rest)*);
-    };
-    (@let_accum
-        [$($binds:tt)*],
-        $rec:literal,
-        in $($rest:tt)+
-    ) => {
+    (let $($rec:ident)? {$($binds:tt)*} in $($expr:tt)+) => {
         Expr::Let {
-            rec: $rec,
-            binds: Binds(std::array::IntoIter::new([$($binds)*]).collect()),
-            expr: Box::new(expr!($($rest)*)),
+            rec: rec!($($rec)*),
+            binds: binds!($($binds)*),
+            expr: Box::new(expr!($($expr)*))
         }
     };
-    (@let_accum
-        [$($binds:tt)*],
-        $rec:literal,
-        $i:ident = {$($free:tt)*} $pi:ident {$($args:tt)*} -> {$($expr:tt)+}
-        $($rest:tt)+
-    ) => {
-        expr!(@let_accum [
-            $($binds)*
-            bind!($i = {$($free)*} $pi {$($args)*} -> {$($expr)*}),
-        ], $rec, $($rest)*)
-    };
 
-    (case {$($expr:tt)+} of $($alts:tt)*) => {
+    (case {$($expr:tt)+} of $($alts:tt)+) => {
         Expr::Case {
             expr: Box::new(expr!($($expr)*)),
             alts: alts!($($alts)*)
         }
     };
 
-    (var $var:ident {$($args:tt),* $(,)?}) => {
-        Expr::VarApp {
-            var: stringify!($var).to_owned(),
-            args: vec![$(atom!($args),)*],
-        }
-    };
-
-    (constr $constr:ident {$($args:tt),* $(,)?}) => {
+    (: $constr:ident {$($args:tt),* $(,)?}) => {
         Expr::ConstrApp {
             constr: stringify!($constr).to_owned(),
             args: vec![$(atom!($args),)*],
         }
     };
 
-    (prim $prim:ident {$($args:tt),* $(,)?}) => {
+    ($prim:ident # {$($args:tt),* $(,)?}) => {
         Expr::PrimApp {
-            prim: stringify!($prim).to_owned(),
+            prim: concat!(stringify!($prim), "#").to_owned(),
+            args: vec![$(atom!($args),)*],
+        }
+    };
+
+    ($var:ident {$($args:tt),* $(,)?}) => {
+        Expr::VarApp {
+            var: stringify!($var).to_owned(),
             args: vec![$(atom!($args),)*],
         }
     };
@@ -185,77 +166,80 @@ macro_rules! expr {
 
 #[macro_export]
 macro_rules! alts {
-    (@accum_aalt [$($aalts:tt)*], ) => {
-        compile_error!("Case expression with no default alternatives")
-    };
-    (@accum_aalt [], default -> {$($expr:tt)*}) => {
+    (_ -> {$($expr:tt)+}) => {
         Alts(
             NonDefAlts::Empty,
             DefAlt::DefAlt(Box::new(expr!($($expr)*)))
         )
     };
-    (@accum_aalt [$($aalts:tt)*], default -> {$($expr:tt)*}) => {
-        Alts(
-            NonDefAlts::AlgAlts(vec![$($aalts)*]),
-            DefAlt::DefAlt(Box::new(expr!($($expr)*)))
-        )
-    };
-    (@accum_aalt [], $var:ident -> {$($expr:tt)*}) => {
+    ($var:ident -> {$($expr:tt)+}) => {
         Alts(
             NonDefAlts::Empty,
-            DefAlt::VarAlt{ var: stringify!($var).to_owned(), expr: Box::new(expr!($($expr)*)) }
+            DefAlt::VarAlt {
+                var: stringify!($var).to_owned(),
+                expr: Box::new(expr!($($expr)*)),
+            }
         )
     };
-    (@accum_aalt [$($aalts:tt)*], $var:ident -> {$($expr:tt)*}) => {
+    ($($lit:literal -> {$($expr1:tt)+})* _ -> {$($expr2:tt)+}) => {
         Alts(
-            NonDefAlts::AlgAlts(vec![$($aalts)*]),
-            DefAlt::VarAlt{ var: stringify!($var).to_owned(), expr: Box::new(expr!($($expr)*)) }
+            NonDefAlts::PrimAlts(
+                std::array::IntoIter::new([
+                    $(PrimAlt {
+                        lit: $lit,
+                        expr: expr!($($expr1)*),
+                    },)*
+                ]).collect()
+            ),
+            DefAlt::DefAlt{ expr: Box::new(expr!($($expr2)*)) },
         )
     };
-    (@accum_aalt [$($aalts:tt)*], $constr:ident {$($vars:ident),*} -> {$($expr:tt)*} $($rest:tt)*) => {
-        alts!(@accum_aalt [
-            $($aalts)*
-            AlgAlt {
-                constr: stringify!($constr).to_owned(),
-                vars: vec![$(stringify!($vars).to_owned())*],
-                expr: expr!($($expr)*),
-            },
-        ], $($rest)*)
-    };
-    (@accum_aalt [$($aalts:tt)*], $($rest:tt)*) => {
-        compile_error!(concat!("Invalid algebraic alternative found: ", stringify!($($rest)*)))
-    };
-    (@accum_palt [$($aalts:tt)*], ) => {
-        compile_error!("Case expression with no default alternatives")
-    };
-    (@accum_palt [$($palts:tt)*], default -> {$($expr:tt)*}) => {
+    ($($lit:literal -> {$($expr1:tt)+})* $var:ident -> {$($expr2:tt)+}) => {
         Alts(
-            NonDefAlts::PrimAlts(vec![$($palts)*]),
-            DefAlt::DefAlt{ expr: Box::new(expr!($($expr)*)) }
+            NonDefAlts::PrimAlts(
+                std::array::IntoIter::new([
+                    $(PrimAlt {
+                        lit: $lit,
+                        expr: expr!($($expr1)*),
+                    },)*
+                ]).collect()
+            ),
+            DefAlt::VarAlt {
+                var: stringify!($var).to_owned(),
+                expr: Box::new(expr!($($expr2)*)),
+            }
         )
     };
-    (@accum_palt [$($palts:tt)*], $var:ident -> {$($expr:tt)*}) => {
+    ($(: $constr:ident {$($var:ident),*} -> {$($expr1:tt)+})* _ -> {$($expr2:tt)+}) => {
         Alts(
-            NonDefAlts::PrimAlts(vec![$($palts)*]),
-            DefAlt::VarAlt(stringify!($var).to_owned(), Box::new(expr!($($expr)*)))
+            NonDefAlts::AlgAlts(
+                std::array::IntoIter::new([
+                    $(AlgAlt {
+                        constr: stringify!($constr).to_owned(),
+                        vars: vec![$(stringify!($var).to_owned(),)*],
+                        expr: expr!($($expr1)*),
+                    },)*
+                ]).collect()
+            ),
+            DefAlt::DefAlt{ expr: Box::new(expr!($($expr2)*)) },
         )
     };
-    (@accum_palt [$($palts:tt)*], $lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
-        alts!(@accum_palt [
-            $($palts)*
-            PrimAlt { lit: $lit, expr: expr!($($expr)*) },
-        ], $($rest)*)
-    };
-    (@accum_palt [$($aalts:tt)*], $($rest:tt)*) => {
-        compile_error!(concat!("Invalid primitive alternative found: ", stringify!($($rest)*)))
-    };
-    ($lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
-        alts!(@accum_palt [
-            PrimAlt { lit: $lit, expr: expr!($($expr)*) },
-        ], $($rest)*)
-    };
-    ($($rest:tt)*) => {
-        alts!(@accum_aalt [], $($rest)*)
+    ($(: $constr:ident {$($var1:ident),*} -> {$($expr1:tt)+})* $var2:ident -> {$($expr2:tt)+}) => {
+        Alts(
+            NonDefAlts::AlgAlts(
+                std::array::IntoIter::new([
+                    $(AlgAlt {
+                        constr: stringify!($constr).to_owned(),
+                        vars: vec![$(stringify!($var1).to_owned(),)*],
+                        expr: expr!($($expr1)*),
+                    },)*
+                ]).collect()
+            ),
+            DefAlt::VarAlt {
+                var: stringify!($var2).to_owned(),
+                expr: Box::new(expr!($($expr2)*)),
+            }
+        )
     };
 }
 

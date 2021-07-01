@@ -133,7 +133,7 @@ fn lookup_primalt(alts: &Alts, lit: Literal) -> Result<Match<PrimAlt>> {
     }
 }
 
-static MAIN: Lazy<Expr> = Lazy::new(|| expr! { var main {} });
+static MAIN: Lazy<Expr> = Lazy::new(|| expr! { main {} });
 
 pub fn create_init_state(program: &Program) -> Result<State> {
     let addrs = program
@@ -251,10 +251,10 @@ pub fn run(state: &mut State) -> Result<()> {
                     &prim[..],
                     ToValue::vals(args, locals, &Default::default())?.as_slice(),
                 ) {
-                    ("add_", [Value::Int(x), Value::Int(y)]) => x + y,
-                    ("sub_", [Value::Int(x), Value::Int(y)]) => x - y,
-                    ("mul_", [Value::Int(x), Value::Int(y)]) => x * y,
-                    ("div_", [Value::Int(x), Value::Int(y)]) => {
+                    ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
+                    ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
+                    ("mul#", [Value::Int(x), Value::Int(y)]) => x * y,
+                    ("div#", [Value::Int(x), Value::Int(y)]) => {
                         if *y == 0 {
                             return Err(DivisionByZero.into());
                         } else {
