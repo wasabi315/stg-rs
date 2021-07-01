@@ -44,14 +44,28 @@ pub struct Alts(pub NonDefAlts, pub DefAlt);
 
 #[derive(Debug)]
 pub enum NonDefAlts {
-    AlgAlts(Vec<(Constr, Vec<Var>, Expr)>),
-    PrimAlts(Vec<(Literal, Expr)>),
+    Empty,
+    AlgAlts(Vec<AlgAlt>),
+    PrimAlts(Vec<PrimAlt>),
+}
+
+#[derive(Debug)]
+pub struct AlgAlt {
+    pub constr: Constr,
+    pub vars: Vec<Var>,
+    pub expr: Expr,
+}
+
+#[derive(Debug)]
+pub struct PrimAlt {
+    pub lit: Literal,
+    pub expr: Expr,
 }
 
 #[derive(Debug)]
 pub enum DefAlt {
-    VarAlt(Var, Box<Expr>),
-    DefAlt(Box<Expr>),
+    VarAlt { var: Var, expr: Box<Expr> },
+    DefAlt { expr: Box<Expr> },
 }
 
 pub type Var = String;
@@ -98,10 +112,10 @@ macro_rules! bind {
 
 macro_rules! pi {
     (n) => {
-        true
+        false
     };
     (u) => {
-        false
+        true
     };
 }
 
@@ -174,26 +188,38 @@ macro_rules! alts {
     (@accum_aalt [$($aalts:tt)*], ) => {
         compile_error!("Case expression with no default alternatives")
     };
+    (@accum_aalt [], default -> {$($expr:tt)*}) => {
+        Alts(
+            NonDefAlts::Empty,
+            DefAlt::DefAlt(Box::new(expr!($($expr)*)))
+        )
+    };
     (@accum_aalt [$($aalts:tt)*], default -> {$($expr:tt)*}) => {
         Alts(
             NonDefAlts::AlgAlts(vec![$($aalts)*]),
             DefAlt::DefAlt(Box::new(expr!($($expr)*)))
         )
     };
+    (@accum_aalt [], $var:ident -> {$($expr:tt)*}) => {
+        Alts(
+            NonDefAlts::Empty,
+            DefAlt::VarAlt{ var: stringify!($var).to_owned(), expr: Box::new(expr!($($expr)*)) }
+        )
+    };
     (@accum_aalt [$($aalts:tt)*], $var:ident -> {$($expr:tt)*}) => {
         Alts(
             NonDefAlts::AlgAlts(vec![$($aalts)*]),
-            DefAlt::VarAlt(stringify!($var).to_owned(), Box::new(expr!($($expr)*)))
+            DefAlt::VarAlt{ var: stringify!($var).to_owned(), expr: Box::new(expr!($($expr)*)) }
         )
     };
     (@accum_aalt [$($aalts:tt)*], $constr:ident {$($vars:ident),*} -> {$($expr:tt)*} $($rest:tt)*) => {
         alts!(@accum_aalt [
             $($aalts)*
-            (
-                stringify!($constr).to_owned(),
-                vec![$(stringify!($vars).to_owned())*],
-                expr!($($expr)*),
-            ),
+            AlgAlt {
+                constr: stringify!($constr).to_owned(),
+                vars: vec![$(stringify!($vars).to_owned())*],
+                expr: expr!($($expr)*),
+            },
         ], $($rest)*)
     };
     (@accum_aalt [$($aalts:tt)*], $($rest:tt)*) => {
@@ -205,7 +231,7 @@ macro_rules! alts {
     (@accum_palt [$($palts:tt)*], default -> {$($expr:tt)*}) => {
         Alts(
             NonDefAlts::PrimAlts(vec![$($palts)*]),
-            DefAlt::DefAlt(Box::new(expr!($($expr)*)))
+            DefAlt::DefAlt{ expr: Box::new(expr!($($expr)*)) }
         )
     };
     (@accum_palt [$($palts:tt)*], $var:ident -> {$($expr:tt)*}) => {
@@ -217,10 +243,7 @@ macro_rules! alts {
     (@accum_palt [$($palts:tt)*], $lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
         alts!(@accum_palt [
             $($palts)*
-            (
-                $lit,
-                expr!($($expr)*),
-            ),
+            PrimAlt { lit: $lit, expr: expr!($($expr)*) },
         ], $($rest)*)
     };
     (@accum_palt [$($aalts:tt)*], $($rest:tt)*) => {
@@ -228,10 +251,7 @@ macro_rules! alts {
     };
     ($lit:literal -> {$($expr:tt)*} $($rest:tt)*) => {
         alts!(@accum_palt [
-            (
-                $lit,
-                expr!($($expr)*),
-            ),
+            PrimAlt { lit: $lit, expr: expr!($($expr)*) },
         ], $($rest)*)
     };
     ($($rest:tt)*) => {

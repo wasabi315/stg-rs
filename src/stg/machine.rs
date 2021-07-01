@@ -4,17 +4,22 @@ use std::error::Error;
 use std::fmt;
 use std::rc::Rc;
 
+extern crate once_cell;
+use once_cell::sync::Lazy;
+
 use super::ast::*;
 
-struct State<'ast> {
-    code: Code<'ast>,
+#[derive(Debug)]
+pub struct State<'ast> {
+    pub code: Code<'ast>,
     args: ArgStack<'ast>,
     returns: ReturnStack<'ast>,
     updates: UpdateStack<'ast>,
     globals: Env<'ast>,
 }
 
-enum Code<'ast> {
+#[derive(Debug)]
+pub enum Code<'ast> {
     Eval {
         expr: &'ast Expr,
         locals: Env<'ast>,
@@ -29,6 +34,7 @@ enum Code<'ast> {
 
 type ArgStack<'ast> = Vec<Value<'ast>>;
 
+#[derive(Debug)]
 struct ReturnStackFrame<'ast> {
     alts: &'ast Alts,
     locals: Env<'ast>,
@@ -36,6 +42,7 @@ struct ReturnStackFrame<'ast> {
 
 type ReturnStack<'ast> = Vec<ReturnStackFrame<'ast>>;
 
+#[derive(Debug)]
 struct UpdateStackFrame<'ast> {
     args: ArgStack<'ast>,
     returns: ReturnStack<'ast>,
@@ -48,29 +55,19 @@ type Env<'ast> = HashMap<Var, Value<'ast>>;
 
 type Addr<'ast> = Rc<RefCell<Option<Closure<'ast>>>>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Value<'ast> {
     Addr(Addr<'ast>),
     Int(i64),
 }
 
+#[derive(Clone, Debug)]
 struct Closure<'ast> {
     lf: &'ast LambdaForm,
     free: Vec<Value<'ast>>,
 }
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
-#[derive(Debug)]
-struct UnboundVariable(String);
-
-impl fmt::Display for UnboundVariable {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Unbound vairable: {}", self.0)
-    }
-}
-
-impl Error for UnboundVariable {}
 
 trait ToValue: Sized {
     fn val<'ast>(&self, locals: &Env<'ast>, globals: &Env<'ast>) -> Result<Value<'ast>>;
@@ -109,8 +106,66 @@ impl ToValue for Atom {
     }
 }
 
-fn run(state: &mut State) -> Result<()> {
+enum Match<'a, T> {
+    Match(&'a T),
+    DefMatch(&'a DefAlt),
+}
+
+fn lookup_algalt<'a>(alts: &'a Alts, constr: &'a str) -> Result<Match<'a, AlgAlt>> {
+    match &alts.0 {
+        NonDefAlts::AlgAlts(aalts) => Ok(aalts
+            .iter()
+            .find(|aalt| aalt.constr == constr)
+            .map_or(Match::DefMatch(&alts.1), Match::Match)),
+        NonDefAlts::Empty => Ok(Match::DefMatch(&alts.1)),
+        NonDefAlts::PrimAlts(_) => Err(InvalidNonDefAlt.into()),
+    }
+}
+
+fn lookup_primalt(alts: &Alts, lit: Literal) -> Result<Match<PrimAlt>> {
+    match &alts.0 {
+        NonDefAlts::PrimAlts(palts) => Ok(palts
+            .iter()
+            .find(|palt| palt.lit == lit)
+            .map_or(Match::DefMatch(&alts.1), Match::Match)),
+        NonDefAlts::Empty => Ok(Match::DefMatch(&alts.1)),
+        NonDefAlts::AlgAlts(_) => Err(InvalidNonDefAlt.into()),
+    }
+}
+
+static MAIN: Lazy<Expr> = Lazy::new(|| expr! { var main {} });
+
+pub fn create_init_state(program: &Program) -> Result<State> {
+    let addrs = program
+        .0
+        .values()
+        .map(|lf| Rc::new(RefCell::new(Some(Closure { lf, free: vec![] }))));
+    let mut globals: Env = Default::default();
+    for (var, addr) in program.0.keys().zip(addrs.clone()) {
+        globals.insert(var.clone(), Value::Addr(addr));
+    }
+    for addr in addrs {
+        let mut addr = addr.borrow_mut();
+        let closure = addr.as_mut().unwrap();
+        closure.free = ToValue::vals(&closure.lf.free, &Default::default(), &globals)?;
+    }
+
+    Ok(State {
+        code: Code::Eval {
+            expr: &*MAIN,
+            locals: Default::default(),
+        },
+        args: vec![],
+        returns: vec![],
+        updates: vec![],
+        globals,
+    })
+}
+
+pub fn run(state: &mut State) -> Result<()> {
     loop {
+        println!("{:?}", state);
+
         match &mut state.code {
             Code::Eval {
                 expr: Expr::VarApp { var, args },
@@ -196,10 +251,10 @@ fn run(state: &mut State) -> Result<()> {
                     &prim[..],
                     ToValue::vals(args, locals, &Default::default())?.as_slice(),
                 ) {
-                    ("+#", [Value::Int(x), Value::Int(y)]) => x + y,
-                    ("-#", [Value::Int(x), Value::Int(y)]) => x - y,
-                    ("*#", [Value::Int(x), Value::Int(y)]) => x * y,
-                    ("/#", [Value::Int(x), Value::Int(y)]) => {
+                    ("add_", [Value::Int(x), Value::Int(y)]) => x + y,
+                    ("sub_", [Value::Int(x), Value::Int(y)]) => x - y,
+                    ("mul_", [Value::Int(x), Value::Int(y)]) => x * y,
+                    ("div_", [Value::Int(x), Value::Int(y)]) => {
                         if *y == 0 {
                             return Err(DivisionByZero.into());
                         } else {
@@ -236,6 +291,8 @@ fn run(state: &mut State) -> Result<()> {
                                 addr: Rc::clone(&addr),
                             });
                             state.code = Code::Eval { expr, locals };
+                        } else if state.args.len() < lf.args.len() {
+                            unimplemented!("Partial Application");
                         } else {
                             let args = state.args.drain(..lf.args.len());
 
@@ -253,7 +310,50 @@ fn run(state: &mut State) -> Result<()> {
                 }
             }
 
-            _ => return Ok(()),
+            Code::ReturnCon { constr, args } => {
+                if let Some(ReturnStackFrame { alts, mut locals }) = state.returns.pop() {
+                    let expr = match lookup_algalt(alts, constr)? {
+                        Match::Match(AlgAlt { vars, expr, .. }) => {
+                            let locals_: Env =
+                                vars.iter().cloned().zip(args.iter().cloned()).collect();
+                            locals.extend(locals_);
+                            expr
+                        }
+                        Match::DefMatch(DefAlt::DefAlt { expr }) => expr,
+                        Match::DefMatch(DefAlt::VarAlt { var, expr }) => {
+                            unimplemented!("Default alternative with bound");
+                        }
+                    };
+                    state.code = Code::Eval { expr, locals };
+                } else if let Some(UpdateStackFrame {
+                    args,
+                    returns,
+                    addr,
+                }) = state.updates.pop()
+                {
+                    unimplemented!();
+                } else {
+                    unimplemented!();
+                }
+            }
+
+            Code::ReturnInt(n) => {
+                let ReturnStackFrame { alts, mut locals } = match state.returns.pop() {
+                    Some(frame) => frame,
+                    None => return Err(ReturnWithEmptyReturnStack.into()),
+                };
+
+                let expr = match lookup_primalt(alts, *n)? {
+                    Match::Match(PrimAlt { expr, .. }) => expr,
+                    Match::DefMatch(DefAlt::DefAlt { expr }) => expr,
+                    Match::DefMatch(DefAlt::VarAlt { var, expr }) => {
+                        locals.insert(var.clone(), Value::Int(*n));
+                        expr
+                    }
+                };
+
+                state.code = Code::Eval { expr, locals };
+            }
         };
     }
 }
@@ -317,3 +417,39 @@ impl fmt::Display for UpdatableClosureWithArgs {
 }
 
 impl Error for UpdatableClosureWithArgs {}
+
+#[derive(Debug)]
+struct InvalidNonDefAlt;
+
+impl fmt::Display for InvalidNonDefAlt {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "Try to match constructor with integer or integer with constructor"
+        )
+    }
+}
+
+impl Error for InvalidNonDefAlt {}
+
+#[derive(Debug)]
+struct UnboundVariable(String);
+
+impl fmt::Display for UnboundVariable {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Unbound vairable: {}", self.0)
+    }
+}
+
+impl Error for UnboundVariable {}
+
+#[derive(Debug)]
+struct ReturnWithEmptyReturnStack;
+
+impl fmt::Display for ReturnWithEmptyReturnStack {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Try to return integer when return stack is empty",)
+    }
+}
+
+impl Error for ReturnWithEmptyReturnStack {}

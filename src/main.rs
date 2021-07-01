@@ -1,38 +1,58 @@
-use std::io;
+use std::io::{stdout, Write};
 
 #[macro_use]
 mod stg;
 use stg::ast::*;
+use stg::machine::*;
 use stg::pretty::*;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let program = stg! {
-        fix = {} n {f} -> {
-            let rec
-                x = {f, x} u {} -> { var f {x} }
-            in
-                var x {}
-        }
+        main = {} u {} -> { var fact {10} }
 
-        fact = {} u {} -> {
-            let
-                f = {} n {g, n} -> {
-                    case {var n {}} of
-                        0 -> { 1 }
-                        default -> {
-                            case {prim sub_ {n, 1}} of
-                                m -> {
-                                    case {var g {m}} of
-                                        gm -> { prim mul_ {n, gm} }
-                                }
+        fact = {} n {n} -> {
+            case {var n {}} of
+                0 -> { 1 }
+                default -> {
+                    case {prim sub_ {n, 1}} of
+                        m -> {
+                            case {var fact {m}} of
+                                fm -> { prim mul_ {n, fm} }
                         }
                 }
-             in
-                var fix {f}
+        }
+    };
+    /*
+    let program = stg! {
+        main = {} u {} -> { var fact {10} }
+
+        fix = {} n {f} -> {
+            let rec {
+                x = {f, x} u {} -> { var f {x} }
+                y = {} u {} -> { 0 }
+            } in
+                x {}
         }
 
-        main = {} u {} -> { var fact {30} }
+        fact = {} n {n} -> {
+            case {var n {}} of
+                0 -> { 1 }
+                default -> {
+                    case {prim sub_ {n, 1}} of
+                        m -> {
+                            case {var fact {m}} of
+                                fm -> { prim mul_ {n, fm} }
+                        }
+                }
+        }
     };
+     */
 
-    pretty(&program, &mut io::stdout()).unwrap();
+    let mut stdout = stdout();
+    pretty(&program, &mut stdout)?;
+    stdout.flush().unwrap();
+
+    let mut state = create_init_state(&program)?;
+    run(&mut state)?;
+    Ok(())
 }

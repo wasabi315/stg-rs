@@ -7,6 +7,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 
 [[package]]
+name = "once_cell"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "692fcb63b64b1758029e0a96ee63e049ce8c5948587f2f7208df04625e5f6b56"
+
+[[package]]
 name = "pretty"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20,6 +26,7 @@ dependencies = [
 name = "stg-rs"
 version = "0.1.0"
 dependencies = [
+ "once_cell",
  "pretty",
 ]
 

@@ -120,8 +120,7 @@ impl Alts {
         A: Clone,
     {
         match &self.0 {
-            NonDefAlts::AlgAlts(alts) if alts.is_empty() == true => self.1.pretty(allocator),
-            NonDefAlts::PrimAlts(alts) if alts.is_empty() == true => self.1.pretty(allocator),
+            NonDefAlts::Empty => self.1.pretty(allocator),
             _ => self
                 .0
                 .pretty(allocator)
@@ -139,8 +138,9 @@ impl NonDefAlts {
         A: Clone,
     {
         match self {
+            NonDefAlts::Empty => allocator.nil(),
             NonDefAlts::AlgAlts(aalts) => allocator.intersperse(
-                aalts.iter().map(|(constr, vars, expr)| {
+                aalts.iter().map(|AlgAlt { constr, vars, expr }| {
                     allocator
                         .text(constr)
                         .append(allocator.text(" "))
@@ -156,7 +156,7 @@ impl NonDefAlts {
                 allocator.hardline().append(allocator.hardline()),
             ),
             NonDefAlts::PrimAlts(palts) => allocator.intersperse(
-                palts.iter().map(|(lit, expr)| {
+                palts.iter().map(|PrimAlt { lit, expr }| {
                     allocator
                         .text(lit.to_string())
                         .append(allocator.text(" ->"))
@@ -181,13 +181,15 @@ impl DefAlt {
         A: Clone,
     {
         match self {
-            DefAlt::VarAlt(var, expr) => allocator.text(var).append(allocator.text(" ->")).append(
-                allocator
-                    .hardline()
-                    .append(expr.pretty(allocator))
-                    .nest(TAB_SIZE),
-            ),
-            DefAlt::DefAlt(expr) => allocator.text("default ->").append(
+            DefAlt::VarAlt { var, expr } => {
+                allocator.text(var).append(allocator.text(" ->")).append(
+                    allocator
+                        .hardline()
+                        .append(expr.pretty(allocator))
+                        .nest(TAB_SIZE),
+                )
+            }
+            DefAlt::DefAlt { expr } => allocator.text("default ->").append(
                 allocator
                     .hardline()
                     .append(expr.pretty(allocator))
