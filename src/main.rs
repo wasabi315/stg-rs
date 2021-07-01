@@ -17,6 +17,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 x {}
         }
 
+        length = {} n {xs} -> {
+            case {xs {}} of
+                :Cons {y,ys} -> {
+                    case {length {ys}} of
+                        n -> { add# {n, 1} }
+                }
+                _ -> { 0 }
+        }
+
         fact = {} n {n} -> {
             case {n {}} of
                 0 -> { 1 }
