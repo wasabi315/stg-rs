@@ -11,7 +11,11 @@ where
     W: ?Sized + io::Write,
 {
     let allocator = &BoxAllocator;
-    program.pretty::<_, ()>(allocator).1.render(LINE_LEN, out)
+    program
+        .pretty::<_, ()>(allocator)
+        .append(allocator.hardline())
+        .1
+        .render(LINE_LEN, out)
 }
 
 impl Binds {
