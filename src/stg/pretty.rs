@@ -107,7 +107,7 @@ impl Expr {
                     allocator,
                     args.iter().map(|arg| arg.pretty(allocator)),
                 )),
-            Expr::Lit(n) => allocator.text(n.to_string()).append(allocator.text("_")),
+            Expr::Lit(n) => allocator.text(n.to_string()),
         }
     }
 }
