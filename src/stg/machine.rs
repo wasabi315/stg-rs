@@ -70,11 +70,6 @@ struct Closure<'ast> {
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub struct Machine<'a, W: ?Sized> {
-    state: State<'a>,
-    out: &'a mut W,
-}
-
-pub struct Config<'a, W: ?Sized> {
     pub out: &'a mut W,
 }
 
@@ -82,7 +77,7 @@ impl<'a, W> Machine<'a, W>
 where
     W: ?Sized + std::io::Write,
 {
-    pub fn new(program: &'a Program, config: Config<'a, W>) -> Result<Self> {
+    pub fn run(&mut self, program: &'a Program) -> Result<()> {
         let addrs = program
             .0
             .values()
@@ -101,7 +96,7 @@ where
 
         static MAIN: Lazy<Expr> = Lazy::new(|| expr! { main {} });
 
-        Ok(Machine {
+        let mut state = MachineState {
             state: State {
                 code: Code::Eval {
                     expr: &*MAIN,
@@ -112,11 +107,23 @@ where
                 updates: vec![],
                 globals,
             },
-            out: config.out,
-        })
-    }
+            out: self.out,
+        };
 
-    pub fn run(&mut self) -> Result<()> {
+        state.run()
+    }
+}
+
+pub struct MachineState<'a, W: ?Sized> {
+    state: State<'a>,
+    out: &'a mut W,
+}
+
+impl<'a, W> MachineState<'a, W>
+where
+    W: ?Sized + std::io::Write,
+{
+    fn run(&mut self) -> Result<()> {
         let state = &mut self.state;
         loop {
             match &mut state.code {

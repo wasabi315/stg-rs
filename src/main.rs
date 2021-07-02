@@ -31,7 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty(&program, &mut stdout)?;
     stdout.flush().unwrap();
 
-    let mut machine = Machine::new(&program, Config { out: &mut stdout })?;
-    machine.run()?;
+    let mut machine = Machine { out: &mut stdout };
+    machine.run(&program)?;
+
     Ok(())
 }
