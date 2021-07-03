@@ -208,7 +208,7 @@ where
                 } => {
                     let n = match (
                         &prim[..],
-                        ToValue::vals(args, locals, &Default::default())?.as_slice(),
+                        &ToValue::vals(args, locals, &Default::default())?[..],
                     ) {
                         ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
                         ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
@@ -221,7 +221,7 @@ where
                             }
                         }
                         ("traceInt#", [Value::Int(x)]) => {
-                            writeln!(self.out, "{}", x);
+                            writeln!(self.out, "{}", x).unwrap();
                             *x
                         }
                         (op, _) => return Err(UnknownPrimOp(op.to_owned()).into()),
@@ -313,15 +313,19 @@ where
     }
 }
 
-trait ToValue: Sized {
+trait ToValue {
     fn val<'ast>(&self, locals: &Env<'ast>, globals: &Env<'ast>) -> Result<Value<'ast>>;
 
-    fn vals<'ast>(
-        xs: &[Self],
+    fn vals<'ast, 'a, T>(
+        iter: T,
         locals: &Env<'ast>,
         globals: &Env<'ast>,
-    ) -> Result<Vec<Value<'ast>>> {
-        xs.iter().map(|x| x.val(locals, globals)).collect()
+    ) -> Result<Vec<Value<'ast>>>
+    where
+        T: IntoIterator<Item = &'a Self>,
+        Self: 'a,
+    {
+        iter.into_iter().map(|x| x.val(locals, globals)).collect()
     }
 }
 
