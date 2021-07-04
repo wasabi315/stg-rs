@@ -91,7 +91,7 @@ where
         for addr in addrs {
             let mut addr = addr.borrow_mut();
             let closure = addr.as_mut().unwrap();
-            closure.free = ToValue::vals(&closure.lf.free, &Default::default(), &globals)?;
+            closure.free = ToValue::vals(&closure.lf.free, &HashMap::new(), &globals)?;
         }
 
         static MAIN: Lazy<Expr> = Lazy::new(|| expr! { main {} });
@@ -100,7 +100,7 @@ where
             state: State {
                 code: Code::Eval {
                     expr: &*MAIN,
-                    locals: Default::default(),
+                    locals: HashMap::new(),
                 },
                 args: vec![],
                 returns: vec![],
@@ -167,7 +167,7 @@ where
                         let mut addr = addr.borrow_mut();
                         let closure = addr.as_mut().unwrap();
                         closure.free =
-                            ToValue::vals(&closure.lf.free, locals_rhs, &Default::default())?;
+                            ToValue::vals(&closure.lf.free, locals_rhs, &HashMap::new())?;
                     }
 
                     state.code = Code::Eval {
@@ -208,7 +208,7 @@ where
                 } => {
                     let n = match (
                         &prim[..],
-                        &ToValue::vals(args, locals, &Default::default())?[..],
+                        &ToValue::vals(args, locals, &HashMap::new())?[..],
                     ) {
                         ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
                         ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
@@ -280,8 +280,8 @@ where
                                 locals.extend(vars.iter().cloned().zip(args.iter().cloned()));
                                 expr
                             }
-                            Match::DefMatch(DefAlt::DefAlt { expr }) => expr,
-                            Match::DefMatch(DefAlt::VarAlt { .. }) => {
+                            Match::Default(DefAlt::DefAlt { expr }) => expr,
+                            Match::Default(DefAlt::VarAlt { .. }) => {
                                 unimplemented!("Default alternative with bound");
                             }
                         };
@@ -299,8 +299,8 @@ where
 
                     let expr = match lookup_primalt(alts, *n)? {
                         Match::Match(PrimAlt { expr, .. }) => expr,
-                        Match::DefMatch(DefAlt::DefAlt { expr }) => expr,
-                        Match::DefMatch(DefAlt::VarAlt { var, expr }) => {
+                        Match::Default(DefAlt::DefAlt { expr }) => expr,
+                        Match::Default(DefAlt::VarAlt { var, expr }) => {
                             locals.insert(var.clone(), Value::Int(*n));
                             expr
                         }
@@ -334,7 +334,7 @@ impl ToValue for String {
         locals
             .get(self)
             .or_else(|| globals.get(self))
-            .map(Clone::clone)
+            .cloned()
             .ok_or_else(|| UnboundVariable(self.clone()).into())
     }
 }
@@ -356,7 +356,7 @@ impl ToValue for Atom {
 
 enum Match<'a, T> {
     Match(&'a T),
-    DefMatch(&'a DefAlt),
+    Default(&'a DefAlt),
 }
 
 fn lookup_algalt<'a>(alts: &'a Alts, constr: &'a str) -> Result<Match<'a, AlgAlt>> {
@@ -364,8 +364,8 @@ fn lookup_algalt<'a>(alts: &'a Alts, constr: &'a str) -> Result<Match<'a, AlgAlt
         NonDefAlts::AlgAlts(aalts) => Ok(aalts
             .iter()
             .find(|aalt| aalt.constr == constr)
-            .map_or(Match::DefMatch(&alts.1), Match::Match)),
-        NonDefAlts::Empty => Ok(Match::DefMatch(&alts.1)),
+            .map_or(Match::Default(&alts.1), Match::Match)),
+        NonDefAlts::Empty => Ok(Match::Default(&alts.1)),
         NonDefAlts::PrimAlts(_) => Err(InvalidNonDefAlt.into()),
     }
 }
@@ -375,8 +375,8 @@ fn lookup_primalt(alts: &Alts, lit: Literal) -> Result<Match<PrimAlt>> {
         NonDefAlts::PrimAlts(palts) => Ok(palts
             .iter()
             .find(|palt| palt.lit == lit)
-            .map_or(Match::DefMatch(&alts.1), Match::Match)),
-        NonDefAlts::Empty => Ok(Match::DefMatch(&alts.1)),
+            .map_or(Match::Default(&alts.1), Match::Match)),
+        NonDefAlts::Empty => Ok(Match::Default(&alts.1)),
         NonDefAlts::AlgAlts(_) => Err(InvalidNonDefAlt.into()),
     }
 }

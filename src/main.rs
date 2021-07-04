@@ -11,14 +11,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         main = {} u {} -> { fact {10} }
 
         fact = {} n {x} -> {
-            case {x {}} of
+            case { x {} } of
                 0 -> { 1 }
                 _ -> {
-                    case {sub# {x, 1}} of
+                    case { sub# {x, 1} } of
                         y -> {
-                            case {fact {y}} of
+                            case { fact {y} } of
                                 fy -> {
-                                    case {mul# {x, fy}} of
+                                    case { mul# {x, fy} } of
                                         fx -> { traceInt# {fx} }
                                 }
                         }
