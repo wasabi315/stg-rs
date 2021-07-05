@@ -224,6 +224,7 @@ where
                             writeln!(self.out, "{}", x).unwrap();
                             *x
                         }
+                        ("undefined#", []) => return Err(Undefined.into()),
                         (op, _) => return Err(UnknownPrimOp(op.to_owned()).into()),
                     };
                     state.code = Code::ReturnInt(n);
@@ -473,3 +474,14 @@ impl fmt::Display for ReturnWithEmptyReturnStack {
 }
 
 impl Error for ReturnWithEmptyReturnStack {}
+
+#[derive(Debug)]
+struct Undefined;
+
+impl fmt::Display for Undefined {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Try to return integer when return stack is empty",)
+    }
+}
+
+impl Error for Undefined {}

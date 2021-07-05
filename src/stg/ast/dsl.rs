@@ -56,7 +56,7 @@ macro_rules! expr {
     };
     (: $constr:ident {$($args:tt),*}) => {
         Expr::ConstrApp {
-            constr: concat!(":", stringify!($constr).to_owned()),
+            constr: concat!(":", stringify!($constr)).to_owned(),
             args: vec![$(atom!($args),)*],
         }
     };
@@ -81,7 +81,7 @@ macro_rules! alts {
     (_ -> {$($expr:tt)+}) => {
         Alts(
             NonDefAlts::Empty,
-            DefAlt::DefAlt(Box::new(expr!($($expr)*)))
+            DefAlt::DefAlt { expr: Box::new(expr!($($expr)*)) },
         )
     };
     ($var:ident -> {$($expr:tt)+}) => {
