@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
@@ -51,7 +52,7 @@ struct UpdateStackFrame<'ast> {
 
 type UpdateStack<'ast> = Vec<UpdateStackFrame<'ast>>;
 
-type Env<'ast> = HashMap<Var, Value<'ast>>;
+type Env<'ast> = HashMap<Cow<'ast, str>, Value<'ast>>;
 
 type Addr<'ast> = Rc<RefCell<Option<Closure<'ast>>>>;
 
@@ -85,7 +86,7 @@ where
         let globals = program
             .0
             .keys()
-            .cloned()
+            .map(Into::into)
             .zip(addrs.clone().map(Value::Addr))
             .collect();
         for addr in addrs {
@@ -107,6 +108,7 @@ where
                 updates: vec![],
                 globals,
             },
+            fresh: 0,
             out: self.out,
         };
 
@@ -116,6 +118,7 @@ where
 
 pub struct MachineState<'a, W: ?Sized> {
     state: State<'a>,
+    fresh: usize,
     out: &'a mut W,
 }
 
@@ -159,7 +162,13 @@ where
 
                     // 2. create bindings
                     let mut next_locals = locals.clone();
-                    next_locals.extend(binds.0.keys().cloned().zip(addrs.clone().map(Value::Addr)));
+                    next_locals.extend(
+                        binds
+                            .0
+                            .keys()
+                            .map(Into::into)
+                            .zip(addrs.clone().map(Value::Addr)),
+                    );
 
                     // 3. enable closures to access free variables
                     let locals_rhs = if *rec { &next_locals } else { locals };
@@ -241,8 +250,12 @@ where
 
                                 let args = std::mem::take(&mut state.args);
                                 let returns = std::mem::take(&mut state.returns);
-                                let locals =
-                                    lf.free.iter().cloned().zip(free.iter().cloned()).collect();
+                                let locals = lf
+                                    .free
+                                    .iter()
+                                    .map(Into::into)
+                                    .zip(free.iter().cloned())
+                                    .collect();
                                 let expr = &lf.expr;
                                 drop(_addr);
 
@@ -260,8 +273,9 @@ where
                             } else {
                                 let args = state.args.drain(..lf.args.len());
 
-                                let arg_pairs = lf.args.iter().cloned().zip(args);
-                                let free_pairs = lf.free.iter().cloned().zip(free.iter().cloned());
+                                let arg_pairs = lf.args.iter().map(Into::into).zip(args);
+                                let free_pairs =
+                                    lf.free.iter().map(Into::into).zip(free.iter().cloned());
                                 let locals = arg_pairs.chain(free_pairs).collect();
                                 let expr = &lf.expr;
                                 drop(_addr);
@@ -278,7 +292,8 @@ where
                     if let Some(ReturnStackFrame { alts, mut locals }) = state.returns.pop() {
                         let expr = match lookup_algalt(alts, constr)? {
                             Match::Match(AlgAlt { vars, expr, .. }) => {
-                                locals.extend(vars.iter().cloned().zip(args.iter().cloned()));
+                                locals
+                                    .extend(vars.iter().map(Into::into).zip(args.iter().cloned()));
                                 expr
                             }
                             Match::Default(DefAlt::DefAlt { expr }) => expr,
@@ -302,7 +317,7 @@ where
                         Match::Match(PrimAlt { expr, .. }) => expr,
                         Match::Default(DefAlt::DefAlt { expr }) => expr,
                         Match::Default(DefAlt::VarAlt { var, expr }) => {
-                            locals.insert(var.clone(), Value::Int(*n));
+                            locals.insert(var.into(), Value::Int(*n));
                             expr
                         }
                     };
@@ -311,6 +326,12 @@ where
                 }
             };
         }
+    }
+
+    fn gen_fresh<'b>(&mut self) -> Cow<'b, str> {
+        let fresh = format!("#fresh_{}", self.fresh).into();
+        self.fresh += 1;
+        fresh
     }
 }
 
@@ -332,9 +353,10 @@ trait ToValue {
 
 impl ToValue for String {
     fn val<'ast>(&self, locals: &Env<'ast>, globals: &Env<'ast>) -> Result<Value<'ast>> {
+        let key = self.as_str();
         locals
-            .get(self)
-            .or_else(|| globals.get(self))
+            .get(key)
+            .or_else(|| globals.get(key))
             .cloned()
             .ok_or_else(|| UnboundVariable(self.clone()).into())
     }
