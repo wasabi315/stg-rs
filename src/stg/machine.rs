@@ -78,260 +78,264 @@ impl<'a, W> Machine<'a, W>
 where
     W: ?Sized + std::io::Write,
 {
-    pub fn run(&mut self, program: &'a Program) -> Result<()> {
-        let addrs = program
-            .0
-            .values()
-            .map(|lf| Rc::new(RefCell::new(Some(Closure { lf, free: vec![] }))));
-        let globals = program
-            .0
-            .keys()
-            .map(Into::into)
-            .zip(addrs.clone().map(Value::Addr))
-            .collect();
-        for addr in addrs {
-            let mut addr = addr.borrow_mut();
-            let closure = addr.as_mut().unwrap();
-            closure.free = ToValue::vals(&closure.lf.free, &HashMap::new(), &globals)?;
-        }
-
-        static MAIN: Lazy<Expr> = Lazy::new(|| expr! { main {} });
-
-        let mut state = MachineState {
-            state: State {
-                code: Code::Eval {
-                    expr: &*MAIN,
-                    locals: HashMap::new(),
-                },
-                args: vec![],
-                returns: vec![],
-                updates: vec![],
-                globals,
-            },
-            fresh: 0,
-            out: self.out,
-        };
-
-        state.run()
+    pub fn run(&'a mut self, program: &'a Program) -> MachineState<'a, W> {
+        MachineState(MachineStateInner::Init(program), self.out)
     }
 }
 
-pub struct MachineState<'a, W: ?Sized> {
-    state: State<'a>,
-    fresh: usize,
-    out: &'a mut W,
+pub struct MachineState<'a, W: ?Sized>(MachineStateInner<'a>, &'a mut W);
+
+enum MachineStateInner<'a> {
+    Init(&'a Program),
+    Exec { state: State<'a>, fresh: usize },
 }
 
 impl<'a, W> MachineState<'a, W>
 where
     W: ?Sized + std::io::Write,
 {
-    fn run(&mut self) -> Result<()> {
-        let state = &mut self.state;
+    pub fn run(&'a mut self) -> Result<()> {
+        let out = &mut self.1;
         loop {
-            match &mut state.code {
-                Code::Eval {
-                    expr: Expr::VarApp { var, args },
-                    locals,
-                } => {
-                    let args = ToValue::vals(args, locals, &state.globals)?;
-                    match var.val(locals, &state.globals)? {
-                        Value::Addr(addr) => {
-                            state.code = Code::Enter(Rc::clone(&addr));
-                            let args = std::mem::replace(&mut state.args, args);
-                            state.args.extend(args);
-                        }
-                        Value::Int(n) => {
-                            if !args.is_empty() {
-                                return Err(ApplyToInt.into());
-                            }
-                            state.code = Code::ReturnInt(n);
-                        }
-                    }
-                }
-
-                Code::Eval {
-                    expr: Expr::Let { rec, binds, expr },
-                    locals,
-                } => {
-                    // 1. allocate closures
-                    let addrs = binds
+            match &mut self.0 {
+                MachineStateInner::Init(program) => {
+                    let addrs = program
                         .0
                         .values()
                         .map(|lf| Rc::new(RefCell::new(Some(Closure { lf, free: vec![] }))));
-
-                    // 2. create bindings
-                    let mut next_locals = locals.clone();
-                    next_locals.extend(
-                        binds
-                            .0
-                            .keys()
-                            .map(Into::into)
-                            .zip(addrs.clone().map(Value::Addr)),
-                    );
-
-                    // 3. enable closures to access free variables
-                    let locals_rhs = if *rec { &next_locals } else { locals };
+                    let globals = program
+                        .0
+                        .keys()
+                        .map(Into::into)
+                        .zip(addrs.clone().map(Value::Addr))
+                        .collect();
                     for addr in addrs {
                         let mut addr = addr.borrow_mut();
                         let closure = addr.as_mut().unwrap();
-                        closure.free =
-                            ToValue::vals(&closure.lf.free, locals_rhs, &HashMap::new())?;
+                        closure.free = ToValue::vals(&closure.lf.free, &HashMap::new(), &globals)?;
                     }
 
-                    state.code = Code::Eval {
-                        expr,
-                        locals: next_locals,
+                    static MAIN: Lazy<Expr> = Lazy::new(|| expr! { main {} });
+
+                    self.0 = MachineStateInner::Exec {
+                        state: State {
+                            code: Code::Eval {
+                                expr: &*MAIN,
+                                locals: HashMap::new(),
+                            },
+                            args: vec![],
+                            returns: vec![],
+                            updates: vec![],
+                            globals,
+                        },
+                        fresh: 0,
                     };
                 }
 
-                Code::Eval {
-                    expr: Expr::Case { expr, alts },
-                    locals,
-                } => {
-                    let locals = std::mem::take(locals);
-                    state.code = Code::Eval {
-                        expr,
-                        locals: locals.clone(),
-                    };
-                    state.returns.push(ReturnStackFrame { alts, locals });
-                }
-
-                Code::Eval {
-                    expr: Expr::ConstrApp { constr, args },
-                    locals,
-                } => {
-                    let args = ToValue::vals(args, locals, &state.globals)?;
-                    state.code = Code::ReturnCon { constr, args };
-                }
-
-                Code::Eval {
-                    expr: Expr::Lit(n), ..
-                } => {
-                    state.code = Code::ReturnInt(*n);
-                }
-
-                Code::Eval {
-                    expr: Expr::PrimApp { prim, args },
-                    locals,
-                } => {
-                    let n = match (
-                        &prim[..],
-                        &ToValue::vals(args, locals, &HashMap::new())?[..],
-                    ) {
-                        ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
-                        ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
-                        ("mul#", [Value::Int(x), Value::Int(y)]) => x * y,
-                        ("div#", [Value::Int(x), Value::Int(y)]) => {
-                            if *y == 0 {
-                                return Err(DivisionByZero.into());
-                            } else {
-                                x / y
+                MachineStateInner::Exec { state, .. } => {
+                    match &mut state.code {
+                        Code::Eval {
+                            expr: Expr::VarApp { var, args },
+                            locals,
+                        } => {
+                            let args = ToValue::vals(args, locals, &state.globals)?;
+                            match var.val(locals, &state.globals)? {
+                                Value::Addr(addr) => {
+                                    state.code = Code::Enter(Rc::clone(&addr));
+                                    let args = std::mem::replace(&mut state.args, args);
+                                    state.args.extend(args);
+                                }
+                                Value::Int(n) => {
+                                    if !args.is_empty() {
+                                        return Err(ApplyToInt.into());
+                                    }
+                                    state.code = Code::ReturnInt(n);
+                                }
                             }
                         }
-                        ("traceInt#", [Value::Int(x)]) => {
-                            writeln!(self.out, "{}", x).unwrap();
-                            *x
-                        }
-                        ("undefined#", []) => return Err(Undefined.into()),
-                        (op, _) => return Err(UnknownPrimOp(op.to_owned()).into()),
-                    };
-                    state.code = Code::ReturnInt(n);
-                }
 
-                Code::Enter(addr) => {
-                    let _addr = addr.borrow();
-                    match &*_addr {
-                        Some(Closure { lf, free }) => {
-                            if lf.updatable {
-                                if !lf.args.is_empty() {
-                                    return Err(UpdatableClosureWithArgs.into());
+                        Code::Eval {
+                            expr: Expr::Let { rec, binds, expr },
+                            locals,
+                        } => {
+                            // 1. allocate closures
+                            let addrs = binds.0.values().map(|lf| {
+                                Rc::new(RefCell::new(Some(Closure { lf, free: vec![] })))
+                            });
+
+                            // 2. create bindings
+                            let mut next_locals = locals.clone();
+                            next_locals.extend(
+                                binds
+                                    .0
+                                    .keys()
+                                    .map(Into::into)
+                                    .zip(addrs.clone().map(Value::Addr)),
+                            );
+
+                            // 3. enable closures to access free variables
+                            let locals_rhs = if *rec { &next_locals } else { locals };
+                            for addr in addrs {
+                                let mut addr = addr.borrow_mut();
+                                let closure = addr.as_mut().unwrap();
+                                closure.free =
+                                    ToValue::vals(&closure.lf.free, locals_rhs, &HashMap::new())?;
+                            }
+
+                            state.code = Code::Eval {
+                                expr,
+                                locals: next_locals,
+                            };
+                        }
+
+                        Code::Eval {
+                            expr: Expr::Case { expr, alts },
+                            locals,
+                        } => {
+                            let locals = std::mem::take(locals);
+                            state.code = Code::Eval {
+                                expr,
+                                locals: locals.clone(),
+                            };
+                            state.returns.push(ReturnStackFrame { alts, locals });
+                        }
+
+                        Code::Eval {
+                            expr: Expr::ConstrApp { constr, args },
+                            locals,
+                        } => {
+                            let args = ToValue::vals(args, locals, &state.globals)?;
+                            state.code = Code::ReturnCon { constr, args };
+                        }
+
+                        Code::Eval {
+                            expr: Expr::Lit(n), ..
+                        } => {
+                            state.code = Code::ReturnInt(*n);
+                        }
+
+                        Code::Eval {
+                            expr: Expr::PrimApp { prim, args },
+                            locals,
+                        } => {
+                            let n = match (
+                                &prim[..],
+                                &ToValue::vals(args, locals, &HashMap::new())?[..],
+                            ) {
+                                ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
+                                ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
+                                ("mul#", [Value::Int(x), Value::Int(y)]) => x * y,
+                                ("div#", [Value::Int(x), Value::Int(y)]) => {
+                                    if *y == 0 {
+                                        return Err(DivisionByZero.into());
+                                    } else {
+                                        x / y
+                                    }
+                                }
+                                ("traceInt#", [Value::Int(x)]) => {
+                                    writeln!(out, "{}", x).unwrap();
+                                    *x
+                                }
+                                ("undefined#", []) => return Err(Undefined.into()),
+                                (op, _) => return Err(UnknownPrimOp(op.to_owned()).into()),
+                            };
+                            state.code = Code::ReturnInt(n);
+                        }
+
+                        Code::Enter(addr) => {
+                            let _addr = addr.borrow();
+                            match &*_addr {
+                                Some(Closure { lf, free }) => {
+                                    if lf.updatable {
+                                        if !lf.args.is_empty() {
+                                            return Err(UpdatableClosureWithArgs.into());
+                                        }
+
+                                        let args = std::mem::take(&mut state.args);
+                                        let returns = std::mem::take(&mut state.returns);
+                                        let locals = lf
+                                            .free
+                                            .iter()
+                                            .map(Into::into)
+                                            .zip(free.iter().cloned())
+                                            .collect();
+                                        let expr = &lf.expr;
+                                        drop(_addr);
+
+                                        // Set blackhole
+                                        *addr.borrow_mut() = None;
+
+                                        state.updates.push(UpdateStackFrame {
+                                            args,
+                                            returns,
+                                            addr: Rc::clone(&addr),
+                                        });
+                                        state.code = Code::Eval { expr, locals };
+                                    } else if state.args.len() < lf.args.len() {
+                                        unimplemented!("Partial Application");
+                                    } else {
+                                        let args = state.args.drain(..lf.args.len());
+
+                                        let arg_pairs = lf.args.iter().map(Into::into).zip(args);
+                                        let free_pairs = lf
+                                            .free
+                                            .iter()
+                                            .map(Into::into)
+                                            .zip(free.iter().cloned());
+                                        let locals = arg_pairs.chain(free_pairs).collect();
+                                        let expr = &lf.expr;
+                                        drop(_addr);
+
+                                        state.code = Code::Eval { expr, locals };
+                                    }
                                 }
 
-                                let args = std::mem::take(&mut state.args);
-                                let returns = std::mem::take(&mut state.returns);
-                                let locals = lf
-                                    .free
-                                    .iter()
-                                    .map(Into::into)
-                                    .zip(free.iter().cloned())
-                                    .collect();
-                                let expr = &lf.expr;
-                                drop(_addr);
-
-                                // Set blackhole
-                                *addr.borrow_mut() = None;
-
-                                state.updates.push(UpdateStackFrame {
-                                    args,
-                                    returns,
-                                    addr: Rc::clone(&addr),
-                                });
-                                state.code = Code::Eval { expr, locals };
-                            } else if state.args.len() < lf.args.len() {
-                                unimplemented!("Partial Application");
-                            } else {
-                                let args = state.args.drain(..lf.args.len());
-
-                                let arg_pairs = lf.args.iter().map(Into::into).zip(args);
-                                let free_pairs =
-                                    lf.free.iter().map(Into::into).zip(free.iter().cloned());
-                                let locals = arg_pairs.chain(free_pairs).collect();
-                                let expr = &lf.expr;
-                                drop(_addr);
-
-                                state.code = Code::Eval { expr, locals };
+                                None => return Err(EnterBlackhole.into()),
                             }
                         }
 
-                        None => return Err(EnterBlackhole.into()),
-                    }
-                }
-
-                Code::ReturnCon { constr, args } => {
-                    if let Some(ReturnStackFrame { alts, mut locals }) = state.returns.pop() {
-                        let expr = match lookup_algalt(alts, constr)? {
-                            Match::Match(AlgAlt { vars, expr, .. }) => {
-                                locals
-                                    .extend(vars.iter().map(Into::into).zip(args.iter().cloned()));
-                                expr
+                        Code::ReturnCon { constr, args } => {
+                            if let Some(ReturnStackFrame { alts, mut locals }) = state.returns.pop()
+                            {
+                                let expr = match lookup_algalt(alts, constr)? {
+                                    Match::Match(AlgAlt { vars, expr, .. }) => {
+                                        locals.extend(
+                                            vars.iter().map(Into::into).zip(args.iter().cloned()),
+                                        );
+                                        expr
+                                    }
+                                    Match::Default(DefAlt::DefAlt { expr }) => expr,
+                                    Match::Default(DefAlt::VarAlt { .. }) => {
+                                        unimplemented!("Default alternative with bound");
+                                    }
+                                };
+                                state.code = Code::Eval { expr, locals };
+                            } else if let Some(UpdateStackFrame { .. }) = state.updates.pop() {
+                                unimplemented!();
                             }
-                            Match::Default(DefAlt::DefAlt { expr }) => expr,
-                            Match::Default(DefAlt::VarAlt { .. }) => {
-                                unimplemented!("Default alternative with bound");
-                            }
-                        };
-                        state.code = Code::Eval { expr, locals };
-                    } else if let Some(UpdateStackFrame { .. }) = state.updates.pop() {
-                        unimplemented!();
-                    }
-                }
+                        }
 
-                Code::ReturnInt(n) => {
-                    let ReturnStackFrame { alts, mut locals } = match state.returns.pop() {
-                        Some(frame) => frame,
-                        None => return Err(ReturnWithEmptyReturnStack.into()),
-                    };
+                        Code::ReturnInt(n) => {
+                            let ReturnStackFrame { alts, mut locals } = match state.returns.pop() {
+                                Some(frame) => frame,
+                                None => return Err(ReturnWithEmptyReturnStack.into()),
+                            };
 
-                    let expr = match lookup_primalt(alts, *n)? {
-                        Match::Match(PrimAlt { expr, .. }) => expr,
-                        Match::Default(DefAlt::DefAlt { expr }) => expr,
-                        Match::Default(DefAlt::VarAlt { var, expr }) => {
-                            locals.insert(var.into(), Value::Int(*n));
-                            expr
+                            let expr = match lookup_primalt(alts, *n)? {
+                                Match::Match(PrimAlt { expr, .. }) => expr,
+                                Match::Default(DefAlt::DefAlt { expr }) => expr,
+                                Match::Default(DefAlt::VarAlt { var, expr }) => {
+                                    locals.insert(var.into(), Value::Int(*n));
+                                    expr
+                                }
+                            };
+
+                            state.code = Code::Eval { expr, locals };
                         }
                     };
-
-                    state.code = Code::Eval { expr, locals };
                 }
-            };
+            }
         }
-    }
-
-    fn gen_fresh<'b>(&mut self) -> Cow<'b, str> {
-        let fresh = format!("#fresh_{}", self.fresh).into();
-        self.fresh += 1;
-        fresh
     }
 }
 

@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     stdout.flush().unwrap();
 
     let mut machine = Machine { out: &mut stdout };
-    machine.run(&program)?;
+    machine.run(&program).run()?;
 
     Ok(())
 }
