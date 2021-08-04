@@ -5,8 +5,7 @@ use std::collections::HashMap;
 
 pub type Program = Binds;
 
-#[derive(Debug, Clone)]
-pub struct Binds(pub HashMap<Var, LambdaForm>);
+pub type Binds = HashMap<Var, LambdaForm>;
 
 #[derive(Debug, Clone)]
 pub struct LambdaForm {
@@ -25,14 +24,14 @@ pub enum Expr {
     },
     Case {
         expr: Box<Expr>,
-        alts: Alts,
+        alts: Vec<Alt>,
     },
     VarApp {
         var: Var,
         args: Vec<Atom>,
     },
-    ConstrApp {
-        constr: Constr,
+    ConApp {
+        con: Con,
         args: Vec<Atom>,
     },
     PrimApp {
@@ -43,36 +42,27 @@ pub enum Expr {
 }
 
 #[derive(Debug, Clone)]
-pub struct Alts(pub NonDefAlts, pub DefAlt);
-
-#[derive(Debug, Clone)]
-pub enum NonDefAlts {
-    Empty,
-    AlgAlts(Vec<AlgAlt>),
-    PrimAlts(Vec<PrimAlt>),
-}
-
-#[derive(Debug, Clone)]
-pub struct AlgAlt {
-    pub constr: Constr,
-    pub vars: Vec<Var>,
-    pub expr: Expr,
-}
-
-#[derive(Debug, Clone)]
-pub struct PrimAlt {
-    pub lit: Literal,
-    pub expr: Expr,
-}
-
-#[derive(Debug, Clone)]
-pub enum DefAlt {
-    VarAlt { var: Var, expr: Box<Expr> },
-    DefAlt { expr: Box<Expr> },
+pub enum Alt {
+    AlgAlt {
+        con: Con,
+        vars: Vec<Var>,
+        expr: Expr,
+    },
+    PrimAlt {
+        lit: Literal,
+        expr: Expr,
+    },
+    VarAlt {
+        var: Var,
+        expr: Expr,
+    },
+    DefAlt {
+        expr: Expr,
+    },
 }
 
 pub type Var = String;
-pub type Constr = String;
+pub type Con = String;
 pub type Prim = String;
 pub type Literal = i64;
 

@@ -7,7 +7,7 @@ macro_rules! stg {
 
 macro_rules! binds {
     ($($i:ident = {$($free:ident),*} $updatable:ident {$($args:ident),*} -> {$($expr:tt)+})*) => {
-        Binds(std::array::IntoIter::new([
+        std::array::IntoIter::new([
             $((
                 stringify!($i).to_owned(),
                 LambdaForm {
@@ -17,7 +17,7 @@ macro_rules! binds {
                     expr: expr!($($expr)*),
                 }
             ),)*
-        ]).collect())
+        ]).collect()
     };
 }
 
@@ -54,22 +54,36 @@ macro_rules! expr {
             alts: alts!($($alts)*)
         }
     };
-    (: $constr:ident {$($args:tt),*}) => {
-        Expr::ConstrApp {
-            constr: concat!(":", stringify!($constr)).to_owned(),
-            args: vec![$(atom!($args),)*],
+    ($var_or_con:ident {$($args:tt),*}) => {
+        {
+            let var_or_con = stringify!($var_or_con).to_owned();
+            if var_or_con.chars().nth(0).unwrap().is_uppercase() {
+                Expr::ConApp {
+                    con: var_or_con,
+                    args: vec![$(atom!($args),)*],
+                }
+            } else {
+                Expr::VarApp {
+                    var: var_or_con,
+                    args: vec![$(atom!($args),)*],
+                }
+            }
         }
     };
-    ($prim:ident # {$($args:tt),*}) => {
-        Expr::PrimApp {
-            prim: concat!(stringify!($prim), "#").to_owned(),
-            args: vec![$(atom!($args),)*],
-        }
-    };
-    ($var:ident {$($args:tt),*}) => {
-        Expr::VarApp {
-            var: stringify!($var).to_owned(),
-            args: vec![$(atom!($args),)*],
+    ($prim_or_con:ident # {$($args:tt),*}) => {
+        {
+            let prim_or_con = stringify!($prim_or_con);
+            if prim_or_con.chars().nth(0).unwrap().is_uppercase() {
+                Expr::ConApp {
+                    con: concat!(stringify!($prim_or_con), "#").to_owned(),
+                    args: vec![$(atom!($args),)*],
+                }
+            } else {
+                Expr::PrimApp {
+                    prim: concat!(stringify!($prim_or_con), "#").to_owned(),
+                    args: vec![$(atom!($args),)*],
+                }
+            }
         }
     };
     ($lit:literal) => {
@@ -78,81 +92,39 @@ macro_rules! expr {
 }
 
 macro_rules! alts {
-    (_ -> {$($expr:tt)+}) => {
-        Alts(
-            NonDefAlts::Empty,
-            DefAlt::DefAlt { expr: Box::new(expr!($($expr)*)) },
+    (@acc [$($alts:tt)*], ) => {
+        vec![$($alts)*]
+    };
+    (@acc [$($alts:tt)*], $con:ident {$($vars:ident),*} -> {$($expr:tt)+} $($rest:tt)*) => {
+        alts!(
+            @acc [$($alts)* Alt::AlgAlt { con: stringify!($con).to_owned(), vars: vec![$(stringify!($vars).to_owned(),)*], expr: expr!($($expr)*) },],
+            $($rest)*
         )
     };
-    ($var:ident -> {$($expr:tt)+}) => {
-        Alts(
-            NonDefAlts::Empty,
-            DefAlt::VarAlt {
-                var: stringify!($var).to_owned(),
-                expr: Box::new(expr!($($expr)*)),
-            }
+    (@acc [$($alts:tt)*], $lit:literal -> {$($expr:tt)+} $($rest:tt)*) => {
+        alts!(
+            @acc [$($alts)* Alt::PrimAlt { lit: $lit, expr: expr!($($expr)*) },],
+            $($rest)*
         )
     };
-    ($($lit:literal -> {$($expr1:tt)+})* _ -> {$($expr2:tt)+}) => {
-        Alts(
-            NonDefAlts::PrimAlts(
-                std::array::IntoIter::new([
-                    $(PrimAlt {
-                        lit: $lit,
-                        expr: expr!($($expr1)*),
-                    },)*
-                ]).collect()
-            ),
-            DefAlt::DefAlt{ expr: Box::new(expr!($($expr2)*)) },
+    (@acc [$($alts:tt)*], $var:ident -> {$($expr:tt)+} $($rest:tt)*) => {
+        alts!(
+            @acc [$($alts)* Alt::VarAlt { var: stringify!($var).to_owned(), expr: expr!($($expr)*) },],
+            $($rest)*
         )
     };
-    ($($lit:literal -> {$($expr1:tt)+})* $var:ident -> {$($expr2:tt)+}) => {
-        Alts(
-            NonDefAlts::PrimAlts(
-                std::array::IntoIter::new([
-                    $(PrimAlt {
-                        lit: $lit,
-                        expr: expr!($($expr1)*),
-                    },)*
-                ]).collect()
-            ),
-            DefAlt::VarAlt {
-                var: stringify!($var).to_owned(),
-                expr: Box::new(expr!($($expr2)*)),
-            }
+    (@acc [$($alts:tt)*], _ -> {$($expr:tt)+} $($rest:tt)*) => {
+        alts!(
+            @acc [$($alts)* Alt::DefAlt { expr: expr!($($expr)*) },],
+            $($rest)*
         )
     };
-    ($(: $constr:ident {$($var:ident),*} -> {$($expr1:tt)+})* _ -> {$($expr2:tt)+}) => {
-        Alts(
-            NonDefAlts::AlgAlts(
-                std::array::IntoIter::new([
-                    $(AlgAlt {
-                        constr: concat!(":", stringify!($constr)).to_owned(),
-                        vars: vec![$(stringify!($var).to_owned(),)*],
-                        expr: expr!($($expr1)*),
-                    },)*
-                ]).collect()
-            ),
-            DefAlt::DefAlt{ expr: Box::new(expr!($($expr2)*)) },
-        )
+    (@acc $($rest:tt)*) => {
+        compile_error!(stringify!($($rest)*))
     };
-    ($(: $constr:ident {$($var1:ident),*} -> {$($expr1:tt)+})* $var2:ident -> {$($expr2:tt)+}) => {
-        Alts(
-            NonDefAlts::AlgAlts(
-                std::array::IntoIter::new([
-                    $(AlgAlt {
-                        constr: concat!(":", stringify!($constr)).to_owned(),
-                        vars: vec![$(stringify!($var1).to_owned(),)*],
-                        expr: expr!($($expr1)*),
-                    },)*
-                ]).collect()
-            ),
-            DefAlt::VarAlt {
-                var: stringify!($var2).to_owned(),
-                expr: Box::new(expr!($($expr2)*)),
-            }
-        )
-    };
+    ($($rest:tt)*) => {
+        alts!(@acc [], $($rest)*)
+    }
 }
 
 macro_rules! atom {

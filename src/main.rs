@@ -3,7 +3,6 @@ use std::io::{stdout, Write};
 #[macro_use]
 mod stg;
 use stg::ast::*;
-use stg::machine::*;
 use stg::pretty::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,9 +29,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     pretty(&program, &mut stdout)?;
     stdout.flush().unwrap();
-
-    let mut machine = Machine { out: &mut stdout };
-    machine.run(&program).run()?;
 
     Ok(())
 }

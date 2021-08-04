@@ -18,7 +18,15 @@ where
         .render(LINE_LEN, out)
 }
 
-impl Binds {
+trait Pretty {
+    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: Clone;
+}
+
+impl Pretty for Binds {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
@@ -26,15 +34,14 @@ impl Binds {
         A: Clone,
     {
         allocator.intersperse(
-            self.0
-                .iter()
+            self.iter()
                 .map(|(v, lf)| allocator.text(v).append(" = ").append(lf.pretty(allocator))),
             allocator.hardline().append(allocator.hardline()),
         )
     }
 }
 
-impl LambdaForm {
+impl Pretty for LambdaForm {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
@@ -54,7 +61,7 @@ impl LambdaForm {
     }
 }
 
-impl Expr {
+impl Pretty for Expr {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
@@ -85,7 +92,10 @@ impl Expr {
                 .append(
                     allocator
                         .hardline()
-                        .append(alts.pretty(allocator))
+                        .append(allocator.intersperse(
+                            alts.iter().map(|alt| alt.pretty(allocator)),
+                            allocator.hardline().append(allocator.hardline()),
+                        ))
                         .nest(TAB_SIZE),
                 ),
             Expr::VarApp { var, args } => {
@@ -97,13 +107,15 @@ impl Expr {
                         args.iter().map(|arg| arg.pretty(allocator)),
                     ))
             }
-            Expr::ConstrApp { constr, args } => allocator
-                .text(constr)
-                .append(allocator.text(" "))
-                .append(braces_and_sep_by_comma(
-                    allocator,
-                    args.iter().map(|arg| arg.pretty(allocator)),
-                )),
+            Expr::ConApp { con, args } => {
+                allocator
+                    .text(con)
+                    .append(allocator.text(" "))
+                    .append(braces_and_sep_by_comma(
+                        allocator,
+                        args.iter().map(|arg| arg.pretty(allocator)),
+                    ))
+            }
             Expr::PrimApp { prim, args } => allocator
                 .text(prim)
                 .append(allocator.text(" "))
@@ -116,102 +128,48 @@ impl Expr {
     }
 }
 
-impl Alts {
+impl Pretty for Alt {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
         A: Clone,
     {
-        match &self.0 {
-            NonDefAlts::Empty => self.1.pretty(allocator),
-            _ => self
-                .0
-                .pretty(allocator)
-                .append(allocator.hardline().append(allocator.hardline()))
-                .append(self.1.pretty(allocator)),
-        }
-    }
-}
-
-impl NonDefAlts {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
-    where
-        D: DocAllocator<'a, A>,
-        D::Doc: Clone,
-        A: Clone,
-    {
-        match self {
-            NonDefAlts::Empty => allocator.nil(),
-            NonDefAlts::AlgAlts(aalts) => allocator.intersperse(
-                aalts.iter().map(|AlgAlt { constr, vars, expr }| {
-                    allocator
-                        .text(constr)
-                        .append(allocator.text(" "))
-                        .append(braces_and_sep_by_comma(allocator, vars))
-                        .append(allocator.text(" ->"))
-                        .append(
-                            allocator
-                                .hardline()
-                                .append(expr.pretty(allocator))
-                                .nest(TAB_SIZE),
-                        )
-                }),
-                allocator.hardline().append(allocator.hardline()),
-            ),
-            NonDefAlts::PrimAlts(palts) => allocator.intersperse(
-                palts.iter().map(|PrimAlt { lit, expr }| {
-                    allocator
-                        .text(lit.to_string())
-                        .append(allocator.text(" ->"))
-                        .append(
-                            allocator
-                                .hardline()
-                                .append(expr.pretty(allocator))
-                                .nest(TAB_SIZE),
-                        )
-                }),
-                allocator.hardline().append(allocator.hardline()),
-            ),
-        }
-    }
-}
-
-impl DefAlt {
-    fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
-    where
-        D: DocAllocator<'a, A>,
-        D::Doc: Clone,
-        A: Clone,
-    {
-        match self {
-            DefAlt::VarAlt { var, expr } => {
-                allocator.text(var).append(allocator.text(" ->")).append(
-                    allocator
-                        .hardline()
-                        .append(expr.pretty(allocator))
-                        .nest(TAB_SIZE),
-                )
-            }
-            DefAlt::DefAlt { expr } => allocator.text("default ->").append(
+        let (pat_doc, expr) = match self {
+            Alt::AlgAlt { con, vars, expr } => (
                 allocator
-                    .hardline()
-                    .append(expr.pretty(allocator))
-                    .nest(TAB_SIZE),
+                    .text(con)
+                    .append(allocator.text(" "))
+                    .append(braces_and_sep_by_comma(allocator, vars)),
+                expr,
             ),
-        }
+            Alt::PrimAlt { lit, expr } => (
+                allocator.text(lit.to_string()).append(allocator.text("#")),
+                expr,
+            ),
+            Alt::VarAlt { var, expr } => (allocator.text(var), expr),
+            Alt::DefAlt { expr } => (allocator.text("_"), expr),
+        };
+
+        pat_doc.append(allocator.text(" ->")).append(
+            allocator
+                .hardline()
+                .append(expr.pretty(allocator))
+                .nest(TAB_SIZE),
+        )
     }
 }
 
-impl Atom {
+impl Pretty for Atom {
     fn pretty<'a, D, A>(&'a self, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone,
+        A: Clone,
     {
         match self {
             Atom::Var(v) => allocator.text(v),
-            Atom::Lit(n) => allocator.text(n.to_string()),
+            Atom::Lit(n) => allocator.text(n.to_string()).append(allocator.text("#")),
         }
     }
 }
