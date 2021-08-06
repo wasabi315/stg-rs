@@ -79,6 +79,9 @@ fn stdcons<'a>(program: &'a Program) -> HashMap<&'a String, LambdaForm> {
                     }
                 }
             }
+            Expr::ConApp { con, args } => {
+                con_binds.insert(con, make_stdcon(con, args.len()));
+            }
             _ => {}
         }
     }
@@ -261,7 +264,7 @@ fn env_from_binds<'a>(
         .collect();
 
     let mut env = locals.clone();
-    env.extend(binds.keys().zip(addrs.clone().into_iter().map(Value::Addr)));
+    env.extend(binds.keys().zip(addrs.iter().cloned().map(Value::Addr)));
 
     let locals_rhs = if rec { &env } else { &locals };
 
@@ -352,7 +355,7 @@ impl Expr {
 }
 
 impl Alt {
-    fn match_con<'a>(&'a self, con1: &'a String) -> Option<AlgCont> {
+    fn match_con<'a>(&'a self, con1: &'a Con) -> Option<AlgCont> {
         match self {
             Alt::AlgAlt {
                 con: con2,

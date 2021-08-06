@@ -10,7 +10,10 @@ mod extension;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let program = stg! {
-        main = {} u {} -> { fact {10} }
+        main = {} u {} -> {
+            case { fact { 10 } } of
+                n -> { Int# {n} }
+        }
 
         fact = {} n {x} -> {
             case { x {} } of
