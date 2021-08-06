@@ -3,7 +3,10 @@ use std::io::{stdout, Write};
 #[macro_use]
 mod stg;
 use stg::ast::*;
+use stg::machine::*;
 use stg::pretty::*;
+
+mod extension;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let program = stg! {
@@ -29,6 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     pretty(&program, &mut stdout)?;
     stdout.flush().unwrap();
+
+    run(&program)?;
 
     Ok(())
 }

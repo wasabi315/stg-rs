@@ -1,8 +1,8 @@
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::iter;
 use std::rc::Rc;
 
 extern crate once_cell;
@@ -10,357 +10,419 @@ use once_cell::sync::Lazy;
 
 use super::ast::*;
 
-#[derive(Debug)]
-pub struct State<'ast> {
-    code: Code<'ast>,
-    args: ArgStack<'ast>,
-    returns: ReturnStack<'ast>,
-    updates: UpdateStack<'ast>,
-    globals: Env<'ast>,
+use crate::extension::vec::VecExt;
+
+pub fn run(program: &Program) -> Result<()> {
+    static MAIN: Lazy<Expr> = Lazy::new(|| expr! { main {} });
+    let mut code = Code::Eval {
+        expr: &*MAIN,
+        locals: HashMap::new(),
+    };
+
+    let mut stacks = Stacks {
+        args: vec![],
+        returns: vec![],
+        updates: vec![],
+    };
+
+    let globals = env_from_binds(true, program, &HashMap::new(), &HashMap::new())?;
+    let stdcons = stdcons(program);
+    let papps = parapp_helpers();
+
+    while let Some(next) = code.exec(&mut stacks, &globals, &stdcons, &papps)? {
+        code = next;
+    }
+
+    Ok(())
 }
 
-#[derive(Debug)]
-enum Code<'ast> {
-    Eval {
-        expr: &'ast Expr,
-        locals: Env<'ast>,
-    },
-    Enter(Addr<'ast>),
-    ReturnCon {
-        constr: &'ast Constr,
-        args: Vec<Value<'ast>>,
-    },
-    ReturnInt(i64),
+fn stdcons<'a>(program: &'a Program) -> HashMap<&'a String, LambdaForm> {
+    type Arity = usize;
+    fn make_stdcon(con: &str, arity: Arity) -> LambdaForm {
+        let free = (0..arity).map(|i| format!("$stdcon_{}_args{}", con, i));
+        LambdaForm {
+            free: free.clone().collect(),
+            updatable: false,
+            args: vec![],
+            expr: Expr::ConApp {
+                con: con.to_owned(),
+                args: free.map(Atom::Var).collect(),
+            },
+        }
+    }
+
+    fn collect_stdcon<'a>(expr: &'a Expr, con_binds: &mut HashMap<&'a String, LambdaForm>) {
+        match expr {
+            Expr::Let { binds, expr, .. } => {
+                for LambdaForm { expr, .. } in binds.values() {
+                    collect_stdcon(expr, con_binds);
+                }
+                collect_stdcon(expr, con_binds);
+            }
+            Expr::Case { expr, alts } => {
+                collect_stdcon(expr, con_binds);
+                for alt in alts {
+                    match alt {
+                        Alt::AlgAlt { con, vars, expr } => {
+                            con_binds.insert(con, make_stdcon(con, vars.len()));
+                            collect_stdcon(expr, con_binds);
+                        }
+                        Alt::PrimAlt { expr, .. } => {
+                            collect_stdcon(expr, con_binds);
+                        }
+                        Alt::VarAlt { expr, .. } => {
+                            collect_stdcon(expr, con_binds);
+                        }
+                        Alt::DefAlt { expr } => {
+                            collect_stdcon(expr, con_binds);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut binds = HashMap::new();
+    for LambdaForm { expr, .. } in program.values() {
+        collect_stdcon(expr, &mut binds);
+    }
+    binds
 }
 
-type ArgStack<'ast> = Vec<Value<'ast>>;
+fn parapp_helpers() -> HashMap<usize, LambdaForm> {
+    fn make_helper(arity: usize) -> LambdaForm {
+        let var = format!("$papp_{}_var", arity);
+        let args = (0..arity).map(|i| format!("$papp_{}_args{}", arity, i));
+        LambdaForm {
+            free: iter::once(var.clone()).chain(args.clone()).collect(),
+            updatable: false,
+            args: vec![],
+            expr: Expr::VarApp {
+                var,
+                args: args.into_iter().map(Atom::Var).collect(),
+            },
+        }
+    }
 
-#[derive(Debug)]
-struct ReturnStackFrame<'ast> {
-    alts: &'ast Alts,
-    locals: Env<'ast>,
-}
-
-type ReturnStack<'ast> = Vec<ReturnStackFrame<'ast>>;
-
-#[derive(Debug)]
-struct UpdateStackFrame<'ast> {
-    args: ArgStack<'ast>,
-    returns: ReturnStack<'ast>,
-    addr: Addr<'ast>,
-}
-
-type UpdateStack<'ast> = Vec<UpdateStackFrame<'ast>>;
-
-type Env<'ast> = HashMap<Cow<'ast, str>, Value<'ast>>;
-
-type Addr<'ast> = Rc<RefCell<Option<Closure<'ast>>>>;
-
-#[derive(Clone, Debug)]
-enum Value<'ast> {
-    Addr(Addr<'ast>),
-    Int(i64),
-}
-
-#[derive(Clone, Debug)]
-struct Closure<'ast> {
-    lf: &'ast LambdaForm,
-    free: Vec<Value<'ast>>,
+    (0..10).map(|arity| (arity, make_helper(arity))).collect()
 }
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-pub struct Machine<'a, W: ?Sized> {
-    pub out: &'a mut W,
+enum Code<'a> {
+    Eval { expr: &'a Expr, locals: Env<'a> },
+    Enter(Addr<'a>),
+    ReturnCon { con: &'a Con, args: Vec<Value<'a>> },
+    ReturnInt(i64),
 }
 
-impl<'a, W> Machine<'a, W>
-where
-    W: ?Sized + std::io::Write,
-{
-    pub fn run(&'a mut self, program: &'a Program) -> MachineState<'a, W> {
-        MachineState(MachineStateInner::Init(program), self.out)
-    }
+struct Stacks<'a> {
+    args: Vec<Value<'a>>,
+    returns: Vec<RetFrame<'a>>,
+    updates: Vec<UpdFrame<'a>>,
 }
 
-pub struct MachineState<'a, W: ?Sized>(MachineStateInner<'a>, &'a mut W);
-
-enum MachineStateInner<'a> {
-    Init(&'a Program),
-    Exec { state: State<'a>, fresh: usize },
+struct RetFrame<'a> {
+    env: Env<'a>,
+    alts: &'a [Alt],
 }
 
-impl<'a, W> MachineState<'a, W>
-where
-    W: ?Sized + std::io::Write,
-{
-    pub fn run(&'a mut self) -> Result<()> {
-        let out = &mut self.1;
-        loop {
-            match &mut self.0 {
-                MachineStateInner::Init(program) => {
-                    let addrs = program
-                        .0
-                        .values()
-                        .map(|lf| Rc::new(RefCell::new(Some(Closure { lf, free: vec![] }))));
-                    let globals = program
-                        .0
-                        .keys()
-                        .map(Into::into)
-                        .zip(addrs.clone().map(Value::Addr))
-                        .collect();
-                    for addr in addrs {
-                        let mut addr = addr.borrow_mut();
-                        let closure = addr.as_mut().unwrap();
-                        closure.free = ToValue::vals(&closure.lf.free, &HashMap::new(), &globals)?;
-                    }
+struct UpdFrame<'a> {
+    args: Vec<Value<'a>>,
+    returns: Vec<RetFrame<'a>>,
+    addr: Addr<'a>,
+}
 
-                    static MAIN: Lazy<Expr> = Lazy::new(|| expr! { main {} });
+type Env<'a> = HashMap<&'a String, Value<'a>>;
 
-                    self.0 = MachineStateInner::Exec {
-                        state: State {
-                            code: Code::Eval {
-                                expr: &*MAIN,
-                                locals: HashMap::new(),
-                            },
-                            args: vec![],
-                            returns: vec![],
-                            updates: vec![],
-                            globals,
-                        },
-                        fresh: 0,
+#[derive(Debug, Clone)]
+enum Value<'a> {
+    Addr(Addr<'a>),
+    Int(i64),
+}
+
+type Addr<'a> = Rc<RefCell<Option<Closure<'a>>>>;
+
+#[derive(Debug)]
+struct Closure<'a> {
+    lf: &'a LambdaForm,
+    refs: Vec<Value<'a>>,
+}
+
+type AlgCont<'a> = Box<
+    dyn Fn(Env<'a>, Vec<Value<'a>>, &'a HashMap<&'a String, LambdaForm>) -> Result<Option<Code<'a>>>
+        + 'a,
+>;
+
+type PrimCont<'a> = Box<dyn Fn(Env<'a>) -> Result<Option<Code<'a>>> + 'a>;
+
+impl<'a> Code<'a> {
+    fn exec(
+        self,
+        stacks: &mut Stacks<'a>,
+        globals: &Env<'a>,
+        stdcons: &'a HashMap<&'a String, LambdaForm>,
+        papps: &'a HashMap<usize, LambdaForm>,
+    ) -> Result<Option<Self>> {
+        match self {
+            Code::Eval { expr, locals } => expr.eval(locals, stacks, globals),
+
+            Code::Enter(addr) => {
+                let mut closure_ref = addr.borrow_mut();
+                let Closure { lf, refs } = match closure_ref.as_mut() {
+                    Some(closure) => closure,
+                    None => return Err(EnterBlackhole.into()),
+                };
+                let LambdaForm {
+                    free,
+                    updatable,
+                    args,
+                    expr,
+                } = lf;
+
+                if stacks.args.len() < args.len() {
+                    let frame = match stacks.updates.pop() {
+                        Some(frame) => frame,
+                        None => return Ok(None),
                     };
+                    *frame.addr.borrow_mut() = Some(Closure {
+                        lf: papps.get(&stacks.args.len()).unwrap(),
+                        refs: iter::once(Value::Addr(Rc::clone(&addr)))
+                            .chain(stacks.args.clone())
+                            .collect(),
+                    });
+                    stacks.args.extend(frame.args);
+                    stacks.returns = frame.returns;
+                    return Ok(Some(Code::Enter(Rc::clone(&addr))));
                 }
 
-                MachineStateInner::Exec { state, .. } => {
-                    match &mut state.code {
-                        Code::Eval {
-                            expr: Expr::VarApp { var, args },
-                            locals,
-                        } => {
-                            let args = ToValue::vals(args, locals, &state.globals)?;
-                            match var.val(locals, &state.globals)? {
-                                Value::Addr(addr) => {
-                                    state.code = Code::Enter(Rc::clone(&addr));
-                                    let args = std::mem::replace(&mut state.args, args);
-                                    state.args.extend(args);
-                                }
-                                Value::Int(n) => {
-                                    if !args.is_empty() {
-                                        return Err(ApplyToInt.into());
-                                    }
-                                    state.code = Code::ReturnInt(n);
-                                }
-                            }
-                        }
+                let arg_env = args.iter().zip(stacks.args.drain(..args.len()));
+                let free_env = free.iter().zip(refs.iter().cloned());
+                let env = arg_env.chain(free_env).collect();
 
-                        Code::Eval {
-                            expr: Expr::Let { rec, binds, expr },
-                            locals,
-                        } => {
-                            // 1. allocate closures
-                            let addrs = binds.0.values().map(|lf| {
-                                Rc::new(RefCell::new(Some(Closure { lf, free: vec![] })))
-                            });
-
-                            // 2. create bindings
-                            let mut next_locals = locals.clone();
-                            next_locals.extend(
-                                binds
-                                    .0
-                                    .keys()
-                                    .map(Into::into)
-                                    .zip(addrs.clone().map(Value::Addr)),
-                            );
-
-                            // 3. enable closures to access free variables
-                            let locals_rhs = if *rec { &next_locals } else { locals };
-                            for addr in addrs {
-                                let mut addr = addr.borrow_mut();
-                                let closure = addr.as_mut().unwrap();
-                                closure.free =
-                                    ToValue::vals(&closure.lf.free, locals_rhs, &HashMap::new())?;
-                            }
-
-                            state.code = Code::Eval {
-                                expr,
-                                locals: next_locals,
-                            };
-                        }
-
-                        Code::Eval {
-                            expr: Expr::Case { expr, alts },
-                            locals,
-                        } => {
-                            let locals = std::mem::take(locals);
-                            state.code = Code::Eval {
-                                expr,
-                                locals: locals.clone(),
-                            };
-                            state.returns.push(ReturnStackFrame { alts, locals });
-                        }
-
-                        Code::Eval {
-                            expr: Expr::ConstrApp { constr, args },
-                            locals,
-                        } => {
-                            let args = ToValue::vals(args, locals, &state.globals)?;
-                            state.code = Code::ReturnCon { constr, args };
-                        }
-
-                        Code::Eval {
-                            expr: Expr::Lit(n), ..
-                        } => {
-                            state.code = Code::ReturnInt(*n);
-                        }
-
-                        Code::Eval {
-                            expr: Expr::PrimApp { prim, args },
-                            locals,
-                        } => {
-                            let n = match (
-                                &prim[..],
-                                &ToValue::vals(args, locals, &HashMap::new())?[..],
-                            ) {
-                                ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
-                                ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
-                                ("mul#", [Value::Int(x), Value::Int(y)]) => x * y,
-                                ("div#", [Value::Int(x), Value::Int(y)]) => {
-                                    if *y == 0 {
-                                        return Err(DivisionByZero.into());
-                                    } else {
-                                        x / y
-                                    }
-                                }
-                                ("traceInt#", [Value::Int(x)]) => {
-                                    writeln!(out, "{}", x).unwrap();
-                                    *x
-                                }
-                                ("undefined#", []) => return Err(Undefined.into()),
-                                (op, _) => return Err(UnknownPrimOp(op.to_owned()).into()),
-                            };
-                            state.code = Code::ReturnInt(n);
-                        }
-
-                        Code::Enter(addr) => {
-                            let _addr = addr.borrow();
-                            match &*_addr {
-                                Some(Closure { lf, free }) => {
-                                    if lf.updatable {
-                                        if !lf.args.is_empty() {
-                                            return Err(UpdatableClosureWithArgs.into());
-                                        }
-
-                                        let args = std::mem::take(&mut state.args);
-                                        let returns = std::mem::take(&mut state.returns);
-                                        let locals = lf
-                                            .free
-                                            .iter()
-                                            .map(Into::into)
-                                            .zip(free.iter().cloned())
-                                            .collect();
-                                        let expr = &lf.expr;
-                                        drop(_addr);
-
-                                        // Set blackhole
-                                        *addr.borrow_mut() = None;
-
-                                        state.updates.push(UpdateStackFrame {
-                                            args,
-                                            returns,
-                                            addr: Rc::clone(&addr),
-                                        });
-                                        state.code = Code::Eval { expr, locals };
-                                    } else if state.args.len() < lf.args.len() {
-                                        unimplemented!("Partial Application");
-                                    } else {
-                                        let args = state.args.drain(..lf.args.len());
-
-                                        let arg_pairs = lf.args.iter().map(Into::into).zip(args);
-                                        let free_pairs = lf
-                                            .free
-                                            .iter()
-                                            .map(Into::into)
-                                            .zip(free.iter().cloned());
-                                        let locals = arg_pairs.chain(free_pairs).collect();
-                                        let expr = &lf.expr;
-                                        drop(_addr);
-
-                                        state.code = Code::Eval { expr, locals };
-                                    }
-                                }
-
-                                None => return Err(EnterBlackhole.into()),
-                            }
-                        }
-
-                        Code::ReturnCon { constr, args } => {
-                            if let Some(ReturnStackFrame { alts, mut locals }) = state.returns.pop()
-                            {
-                                let expr = match lookup_algalt(alts, constr)? {
-                                    Match::Match(AlgAlt { vars, expr, .. }) => {
-                                        locals.extend(
-                                            vars.iter().map(Into::into).zip(args.iter().cloned()),
-                                        );
-                                        expr
-                                    }
-                                    Match::Default(DefAlt::DefAlt { expr }) => expr,
-                                    Match::Default(DefAlt::VarAlt { .. }) => {
-                                        unimplemented!("Default alternative with bound");
-                                    }
-                                };
-                                state.code = Code::Eval { expr, locals };
-                            } else if let Some(UpdateStackFrame { .. }) = state.updates.pop() {
-                                unimplemented!();
-                            }
-                        }
-
-                        Code::ReturnInt(n) => {
-                            let ReturnStackFrame { alts, mut locals } = match state.returns.pop() {
-                                Some(frame) => frame,
-                                None => return Err(ReturnWithEmptyReturnStack.into()),
-                            };
-
-                            let expr = match lookup_primalt(alts, *n)? {
-                                Match::Match(PrimAlt { expr, .. }) => expr,
-                                Match::Default(DefAlt::DefAlt { expr }) => expr,
-                                Match::Default(DefAlt::VarAlt { var, expr }) => {
-                                    locals.insert(var.into(), Value::Int(*n));
-                                    expr
-                                }
-                            };
-
-                            state.code = Code::Eval { expr, locals };
-                        }
-                    };
+                if *updatable {
+                    stacks.updates.push(UpdFrame {
+                        args: std::mem::take(&mut stacks.args),
+                        returns: std::mem::take(&mut stacks.returns),
+                        addr: Rc::clone(&addr),
+                    });
+                    *closure_ref = None;
                 }
+
+                Ok(Some(Code::Eval { expr, locals: env }))
+            }
+
+            Code::ReturnCon { con, args } => {
+                if let Some(frame) = stacks.returns.pop() {
+                    let cont = match frame.alts.iter().find_map(|alt| alt.match_con(con)) {
+                        Some(cont) => cont,
+                        None => return Err(NoAlternativeMatched.into()),
+                    };
+                    return cont(frame.env, args, stdcons);
+                }
+
+                if let Some(frame) = stacks.updates.pop() {
+                    stacks.args = frame.args;
+                    stacks.returns = frame.returns;
+                    *frame.addr.borrow_mut() = Some(Closure {
+                        lf: stdcons.get(con).unwrap(),
+                        refs: args.clone(),
+                    });
+                    return Ok(Some(Code::ReturnCon { con, args }));
+                }
+
+                Ok(None)
+            }
+
+            Code::ReturnInt(n) => {
+                let frame = match stacks.returns.pop() {
+                    Some(frame) => frame,
+                    None => return Err(ReturnWithEmptyReturnStack.into()),
+                };
+                let cont = match frame.alts.iter().find_map(|alt| alt.match_lit(n)) {
+                    Some(cont) => cont,
+                    None => return Err(NoAlternativeMatched.into()),
+                };
+                cont(frame.env)
             }
         }
     }
 }
 
-trait ToValue {
-    fn val<'ast>(&self, locals: &Env<'ast>, globals: &Env<'ast>) -> Result<Value<'ast>>;
+fn env_from_binds<'a>(
+    rec: bool,
+    binds: &'a Binds,
+    locals: &Env<'a>,
+    globals: &Env<'a>,
+) -> Result<Env<'a>> {
+    let addrs: Vec<Addr<'a>> = (0..binds.len())
+        .map(|_| Rc::new(RefCell::new(None)))
+        .collect();
 
-    fn vals<'ast, 'a, T>(
-        iter: T,
-        locals: &Env<'ast>,
-        globals: &Env<'ast>,
-    ) -> Result<Vec<Value<'ast>>>
+    let mut env = locals.clone();
+    env.extend(binds.keys().zip(addrs.clone().into_iter().map(Value::Addr)));
+
+    let locals_rhs = if rec { &env } else { &locals };
+
+    for (addr, lf) in addrs.into_iter().zip(binds.values()) {
+        *addr.borrow_mut() = Some(Closure {
+            lf,
+            refs: ToValue::vals(&lf.free, locals_rhs, globals)?,
+        });
+    }
+
+    Ok(env)
+}
+
+impl Expr {
+    fn eval<'a>(
+        &'a self,
+        locals: Env<'a>,
+        stacks: &mut Stacks<'a>,
+        globals: &Env<'a>,
+    ) -> Result<Option<Code<'a>>> {
+        match self {
+            Expr::Let { rec, binds, expr } => {
+                let next_locals = env_from_binds(*rec, binds, &locals, globals)?;
+
+                Ok(Some(Code::Eval {
+                    expr,
+                    locals: next_locals,
+                }))
+            }
+
+            Expr::Case { expr, alts } => {
+                stacks.returns.push(RetFrame {
+                    env: locals.clone(),
+                    alts,
+                });
+                Ok(Some(Code::Eval { expr, locals }))
+            }
+
+            Expr::VarApp { var, args } => {
+                let var = var.val(&locals, &globals)?;
+                let args = ToValue::vals(args, &locals, &globals)?;
+
+                match var {
+                    Value::Addr(addr) => {
+                        stacks.args.prepend(args);
+                        Ok(Some(Code::Enter(addr)))
+                    }
+                    Value::Int(n) => {
+                        if !args.is_empty() {
+                            return Err(ApplyToInt.into());
+                        }
+                        Ok(Some(Code::ReturnInt(n)))
+                    }
+                }
+            }
+
+            Expr::ConApp { con, args } => {
+                let args = ToValue::vals(args, &locals, &globals)?;
+                Ok(Some(Code::ReturnCon { con, args }))
+            }
+
+            Expr::PrimApp { prim, args } => {
+                let args = ToValue::vals(args, &locals, &globals)?;
+                let n = match (&prim[..], &args[..]) {
+                    ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
+                    ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
+                    ("mul#", [Value::Int(x), Value::Int(y)]) => x * y,
+                    ("div#", [Value::Int(x), Value::Int(y)]) => {
+                        if y == &0 {
+                            return Err(DivisionByZero.into());
+                        } else {
+                            x / y
+                        }
+                    }
+                    ("neg#", [Value::Int(x)]) => -x,
+                    ("traceInt#", [Value::Int(x)]) => {
+                        println!("{}", x);
+                        *x
+                    }
+                    _ => return Err(UnknownPrimOp(prim.to_owned()).into()),
+                };
+                Ok(Some(Code::ReturnInt(n)))
+            }
+
+            Expr::Lit(n) => Ok(Some(Code::ReturnInt(*n))),
+        }
+    }
+}
+
+impl Alt {
+    fn match_con<'a>(&'a self, con1: &'a String) -> Option<AlgCont> {
+        match self {
+            Alt::AlgAlt {
+                con: con2,
+                vars,
+                expr,
+            } => {
+                if con1 != con2 {
+                    return None;
+                }
+                Some(Box::new(move |mut env, args, _| {
+                    for (var, arg) in vars.iter().zip(args.into_iter()) {
+                        env.insert(var, arg);
+                    }
+                    Ok(Some(Code::Eval { expr, locals: env }))
+                }))
+            }
+            Alt::PrimAlt { .. } => None,
+            Alt::VarAlt { var, expr } => Some(Box::new(move |mut env, args, stdcons| {
+                let closure = Closure {
+                    lf: stdcons.get(con1).unwrap(),
+                    refs: args,
+                };
+                env.insert(var, Value::Addr(Rc::new(RefCell::new(Some(closure)))));
+                Ok(Some(Code::Eval { expr, locals: env }))
+            })),
+            Alt::DefAlt { expr } => Some(Box::new(move |env, _, _| {
+                Ok(Some(Code::Eval { expr, locals: env }))
+            })),
+        }
+    }
+
+    fn match_lit<'a>(&'a self, lit1: i64) -> Option<PrimCont> {
+        match self {
+            Alt::AlgAlt { .. } => None,
+            Alt::PrimAlt { lit: lit2, expr } => {
+                if &lit1 != lit2 {
+                    return None;
+                }
+                Some(Box::new(move |env| {
+                    Ok(Some(Code::Eval { expr, locals: env }))
+                }))
+            }
+            Alt::VarAlt { var, expr } => Some(Box::new(move |mut env| {
+                env.insert(var, Value::Int(lit1));
+                Ok(Some(Code::Eval { expr, locals: env }))
+            })),
+            Alt::DefAlt { expr } => Some(Box::new(move |env| {
+                Ok(Some(Code::Eval { expr, locals: env }))
+            })),
+        }
+    }
+}
+
+trait ToValue {
+    fn val<'a>(&self, locals: &Env<'a>, globals: &Env<'a>) -> Result<Value<'a>>;
+
+    fn vals<'a, 'b, T>(iter: T, locals: &Env<'a>, globals: &Env<'a>) -> Result<Vec<Value<'a>>>
     where
-        T: IntoIterator<Item = &'a Self>,
-        Self: 'a,
+        T: IntoIterator<Item = &'b Self>,
+        Self: 'b,
     {
         iter.into_iter().map(|x| x.val(locals, globals)).collect()
     }
 }
 
 impl ToValue for String {
-    fn val<'ast>(&self, locals: &Env<'ast>, globals: &Env<'ast>) -> Result<Value<'ast>> {
-        let key = self.as_str();
+    fn val<'a>(&self, locals: &Env<'a>, globals: &Env<'a>) -> Result<Value<'a>> {
         locals
-            .get(key)
-            .or_else(|| globals.get(key))
+            .get(self)
+            .or_else(|| globals.get(self))
             .cloned()
             .ok_or_else(|| UnboundVariable(self.clone()).into())
     }
@@ -378,33 +440,6 @@ impl ToValue for Atom {
             Atom::Lit(n) => n.val(locals, globals),
             Atom::Var(v) => v.val(locals, globals),
         }
-    }
-}
-
-enum Match<'a, T> {
-    Match(&'a T),
-    Default(&'a DefAlt),
-}
-
-fn lookup_algalt<'a>(alts: &'a Alts, constr: &'a str) -> Result<Match<'a, AlgAlt>> {
-    match &alts.0 {
-        NonDefAlts::AlgAlts(aalts) => Ok(aalts
-            .iter()
-            .find(|aalt| aalt.constr == constr)
-            .map_or(Match::Default(&alts.1), Match::Match)),
-        NonDefAlts::Empty => Ok(Match::Default(&alts.1)),
-        NonDefAlts::PrimAlts(_) => Err(InvalidNonDefAlt.into()),
-    }
-}
-
-fn lookup_primalt(alts: &Alts, lit: Literal) -> Result<Match<PrimAlt>> {
-    match &alts.0 {
-        NonDefAlts::PrimAlts(palts) => Ok(palts
-            .iter()
-            .find(|palt| palt.lit == lit)
-            .map_or(Match::Default(&alts.1), Match::Match)),
-        NonDefAlts::Empty => Ok(Match::Default(&alts.1)),
-        NonDefAlts::AlgAlts(_) => Err(InvalidNonDefAlt.into()),
     }
 }
 
@@ -502,12 +537,12 @@ impl fmt::Display for ReturnWithEmptyReturnStack {
 impl Error for ReturnWithEmptyReturnStack {}
 
 #[derive(Debug)]
-struct Undefined;
+struct NoAlternativeMatched;
 
-impl fmt::Display for Undefined {
+impl fmt::Display for NoAlternativeMatched {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Try to return integer when return stack is empty",)
+        write!(f, "No alternative matched",)
     }
 }
 
-impl Error for Undefined {}
+impl Error for NoAlternativeMatched {}
