@@ -1,5 +1,7 @@
 use std::io::stdout;
 
+use anyhow::Result;
+
 #[macro_use]
 mod stg;
 use stg::ast::*;
@@ -8,7 +10,7 @@ use stg::pretty::*;
 
 mod extension;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let program = stg! {
         main = {} u {} -> {
             case { fact { 10 } } of

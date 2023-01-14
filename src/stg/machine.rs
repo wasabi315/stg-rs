@@ -1,10 +1,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
 use std::iter;
 use std::rc::Rc;
 
+use anyhow::Context;
+use anyhow::{bail, Result};
 use once_cell::sync::Lazy;
 
 use super::ast::*;
@@ -110,8 +110,6 @@ fn parapp_helpers() -> HashMap<usize, LambdaForm> {
     (0..10).map(|arity| (arity, make_helper(arity))).collect()
 }
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
 enum Code<'a> {
     Eval { expr: &'a Expr, locals: Env<'a> },
     Enter(Addr<'a>),
@@ -172,10 +170,8 @@ impl<'a> Code<'a> {
 
             Code::Enter(addr) => {
                 let mut closure_ref = addr.borrow_mut();
-                let Closure { lf, refs } = match closure_ref.as_mut() {
-                    Some(closure) => closure,
-                    None => return Err(EnterBlackhole.into()),
-                };
+                let Closure { lf, refs } =
+                    closure_ref.as_mut().with_context(|| "Enter blackhole")?;
                 let LambdaForm {
                     free,
                     updatable,
@@ -217,10 +213,11 @@ impl<'a> Code<'a> {
 
             Code::ReturnCon { con, args } => {
                 if let Some(frame) = stacks.returns.pop() {
-                    let cont = match frame.alts.iter().find_map(|alt| alt.match_con(con)) {
-                        Some(cont) => cont,
-                        None => return Err(NoAlternativeMatched.into()),
-                    };
+                    let cont = frame
+                        .alts
+                        .iter()
+                        .find_map(|alt| alt.match_con(con))
+                        .with_context(|| format!("No alternative matched with {}", con))?;
                     return cont(frame.env, args, stdcons);
                 }
 
@@ -238,14 +235,15 @@ impl<'a> Code<'a> {
             }
 
             Code::ReturnInt(n) => {
-                let frame = match stacks.returns.pop() {
-                    Some(frame) => frame,
-                    None => return Err(ReturnWithEmptyReturnStack.into()),
-                };
-                let cont = match frame.alts.iter().find_map(|alt| alt.match_lit(n)) {
-                    Some(cont) => cont,
-                    None => return Err(NoAlternativeMatched.into()),
-                };
+                let frame = stacks
+                    .returns
+                    .pop()
+                    .with_context(|| "Trying to return when the return stack is empty")?;
+                let cont = frame
+                    .alts
+                    .iter()
+                    .find_map(|alt| alt.match_lit(n))
+                    .with_context(|| format!("No alternative matched with {}", n))?;
                 cont(frame.env)
             }
         }
@@ -313,7 +311,7 @@ impl Expr {
                     }
                     Value::Int(n) => {
                         if !args.is_empty() {
-                            return Err(ApplyToInt.into());
+                            bail!("Trying to apply an integer value {}", n);
                         }
                         Ok(Some(Code::ReturnInt(n)))
                     }
@@ -331,19 +329,13 @@ impl Expr {
                     ("add#", [Value::Int(x), Value::Int(y)]) => x + y,
                     ("sub#", [Value::Int(x), Value::Int(y)]) => x - y,
                     ("mul#", [Value::Int(x), Value::Int(y)]) => x * y,
-                    ("div#", [Value::Int(x), Value::Int(y)]) => {
-                        if y == &0 {
-                            return Err(DivisionByZero.into());
-                        } else {
-                            x / y
-                        }
-                    }
+                    ("div#", [Value::Int(x), Value::Int(y)]) => x / y,
                     ("neg#", [Value::Int(x)]) => -x,
                     ("traceInt#", [Value::Int(x)]) => {
                         println!("{}", x);
                         *x
                     }
-                    _ => return Err(UnknownPrimOp(prim.to_owned()).into()),
+                    _ => bail!("Unknow primitive operation {}", prim),
                 };
                 Ok(Some(Code::ReturnInt(n)))
             }
@@ -426,7 +418,7 @@ impl ToValue for String {
             .get(self)
             .or_else(|| globals.get(self))
             .cloned()
-            .ok_or_else(|| UnboundVariable(self.clone()).into())
+            .with_context(|| format!("Unbound variable {}", self))
     }
 }
 
@@ -444,107 +436,3 @@ impl ToValue for Atom {
         }
     }
 }
-
-// Errors
-
-#[derive(Debug)]
-struct UnknownPrimOp(String);
-
-impl fmt::Display for UnknownPrimOp {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Unknown primitive operation: {}", self.0)
-    }
-}
-
-impl Error for UnknownPrimOp {}
-
-#[derive(Debug)]
-struct DivisionByZero;
-
-impl fmt::Display for DivisionByZero {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Division by zero")
-    }
-}
-
-impl Error for DivisionByZero {}
-
-#[derive(Debug)]
-struct EnterBlackhole;
-
-impl fmt::Display for EnterBlackhole {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Enter blackhole")
-    }
-}
-
-impl Error for EnterBlackhole {}
-
-#[derive(Debug)]
-struct ApplyToInt;
-
-impl fmt::Display for ApplyToInt {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Arguments are applied to integer")
-    }
-}
-
-impl Error for ApplyToInt {}
-
-#[derive(Debug)]
-struct UpdatableClosureWithArgs;
-
-impl fmt::Display for UpdatableClosureWithArgs {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Updatable closure with arguments")
-    }
-}
-
-impl Error for UpdatableClosureWithArgs {}
-
-#[derive(Debug)]
-struct InvalidNonDefAlt;
-
-impl fmt::Display for InvalidNonDefAlt {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Try to match constructor with integer or integer with constructor"
-        )
-    }
-}
-
-impl Error for InvalidNonDefAlt {}
-
-#[derive(Debug)]
-struct UnboundVariable(String);
-
-impl fmt::Display for UnboundVariable {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Unbound vairable: {}", self.0)
-    }
-}
-
-impl Error for UnboundVariable {}
-
-#[derive(Debug)]
-struct ReturnWithEmptyReturnStack;
-
-impl fmt::Display for ReturnWithEmptyReturnStack {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Try to return integer when return stack is empty",)
-    }
-}
-
-impl Error for ReturnWithEmptyReturnStack {}
-
-#[derive(Debug)]
-struct NoAlternativeMatched;
-
-impl fmt::Display for NoAlternativeMatched {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "No alternative matched",)
-    }
-}
-
-impl Error for NoAlternativeMatched {}
