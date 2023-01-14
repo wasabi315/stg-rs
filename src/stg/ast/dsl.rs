@@ -7,7 +7,7 @@ macro_rules! stg {
 
 macro_rules! binds {
     ($($i:ident = {$($free:ident),*} $updatable:ident {$($args:ident),*} -> {$($expr:tt)+})*) => {
-        std::array::IntoIter::new([
+        ::std::collections::HashMap::from([
             $((
                 stringify!($i).to_owned(),
                 LambdaForm {
@@ -17,7 +17,7 @@ macro_rules! binds {
                     expr: expr!($($expr)*),
                 }
             ),)*
-        ]).collect()
+        ])
     };
 }
 

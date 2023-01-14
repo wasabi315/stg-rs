@@ -87,7 +87,7 @@ pub fn snd() -> Program {
         fst = {} n {x} -> {
             case { x {} } of
                 Pair {a, b} -> { b {} }
-                _ -> { undefined# {} }
+                _ -> { undefined # {} }
         }
     }
 }
@@ -108,7 +108,6 @@ pub fn uncurry() -> Program {
         uncurry = {} n {f, p} -> {
             case { p {} } of
                 Pair {x, y} -> { f {x, y} }
-                _ -> { undefined# {} }
         }
     }
 }
@@ -118,7 +117,6 @@ pub fn swap() -> Program {
         swap = {} n {p} -> {
             case { p {} } of
                 Pair {x, y} -> { Pair {y, x} }
-                _ -> { undefined# {} }
         }
     }
 }

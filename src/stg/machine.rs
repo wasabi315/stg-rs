@@ -5,7 +5,6 @@ use std::fmt;
 use std::iter;
 use std::rc::Rc;
 
-extern crate once_cell;
 use once_cell::sync::Lazy;
 
 use super::ast::*;
